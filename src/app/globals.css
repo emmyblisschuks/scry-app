@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+@theme {
+  --color-cream: #f7efe3;
+  --color-cream-dark: #efe3d0;
+  --color-wine: #7a2e3a;
+  --color-wine-dark: #5e2029;
+  --color-wine-light: #a85463;
+  --color-ink: #3a1e22;
+  --color-muted: #8a6b6f;
+  --color-warn: #e0a233;
+  --color-ok: #3f9a5a;
+
+  --font-serif: Georgia, "Times New Roman", serif;
+  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+}
+
+html,
+body {
+  background: var(--color-cream);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+@media (prefers-color-scheme: dark) {
+  html:not([data-theme="light"]),
+  body:not([data-theme="light"]) {
+    background: #15090b;
+    color: #f3e6e8;
+  }
+}
+
+html[data-theme="dark"],
+body[data-theme="dark"] {
+  background: #15090b;
+  color: #f3e6e8;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+@keyframes scaleIn {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  75% {
+    transform: translateX(4px);
+  }
+}
+
+@keyframes pulseGlow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(122, 46, 58, 0.35);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(122, 46, 58, 0);
+  }
+}
