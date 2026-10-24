@@ -1,17 +1,86 @@
 "use client";
 
+import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import Logo from "./Logo";
 
+type Mode = "signin" | "signup";
+
 export default function AuthCard() {
+  const router = useRouter();
+  const supabase = createClient();
+
+  const [mode, setMode] = useState<Mode>("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [checkEmail, setCheckEmail] = useState(false);
+
   async function signInWithGoogle() {
-    const supabase = createClient();
     await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
       },
     });
+  }
+
+  async function handleEmailAuth(e: React.FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+
+    if (mode === "signup") {
+      const { data, error } = await supabase.auth.signUp({ email, password });
+      setLoading(false);
+      if (error) {
+        setError(error.message);
+        return;
+      }
+      if (data.session) {
+        router.push("/dashboard");
+      } else {
+        // email confirmation is required before a session is issued
+        setCheckEmail(true);
+      }
+    } else {
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+      setLoading(false);
+      if (error) {
+        setError(error.message);
+        return;
+      }
+      router.push("/dashboard");
+    }
+  }
+
+  if (checkEmail) {
+    return (
+      <div className="flex w-full max-w-sm flex-col items-center gap-4 rounded-3xl bg-white/60 p-10 text-center shadow-sm">
+        <Logo size={56} />
+        <h1 className="font-serif text-2xl font-bold text-wine">
+          Check your inbox
+        </h1>
+        <p className="text-sm text-muted">
+          We sent a confirmation link to <strong>{email}</strong>. Click it to
+          activate your account, then come back and sign in.
+        </p>
+        <button
+          onClick={() => {
+            setCheckEmail(false);
+            setMode("signin");
+          }}
+          className="text-sm font-medium text-wine underline"
+        >
+          Back to sign in
+        </button>
+      </div>
+    );
   }
 
   return (
@@ -28,6 +97,58 @@ export default function AuthCard() {
       >
         <GoogleIcon />
         Continue with Google
+      </button>
+
+      <div className="flex w-full items-center gap-3">
+        <div className="h-px flex-1 bg-cream-dark" />
+        <span className="text-xs text-muted">or</span>
+        <div className="h-px flex-1 bg-cream-dark" />
+      </div>
+
+      <form onSubmit={handleEmailAuth} className="flex w-full flex-col gap-3">
+        <input
+          type="email"
+          required
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="w-full rounded-xl border border-cream-dark bg-white px-4 py-3 text-sm text-ink outline-none focus:border-wine"
+        />
+        <input
+          type="password"
+          required
+          minLength={6}
+          placeholder="Password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="w-full rounded-xl border border-cream-dark bg-white px-4 py-3 text-sm text-ink outline-none focus:border-wine"
+        />
+
+        {error && <p className="text-left text-xs text-wine-dark">{error}</p>}
+
+        <button
+          type="submit"
+          disabled={loading}
+          className="w-full rounded-full border border-wine px-6 py-3 font-medium text-wine transition active:scale-95 disabled:opacity-50"
+        >
+          {loading
+            ? "Please wait…"
+            : mode === "signin"
+            ? "Sign in"
+            : "Create account"}
+        </button>
+      </form>
+
+      <button
+        onClick={() => {
+          setMode(mode === "signin" ? "signup" : "signin");
+          setError(null);
+        }}
+        className="text-sm text-muted underline"
+      >
+        {mode === "signin"
+          ? "New here? Create an account"
+          : "Already have an account? Sign in"}
       </button>
 
       <p className="text-xs text-muted">
