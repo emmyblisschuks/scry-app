@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { createClient } from "@/lib/supabase/client";
 import Logo from "@/components/Logo";
+import { readFunctionError } from "@/lib/functionError";
 
 const STAGES = [
   "Reading study material…",
@@ -17,11 +18,71 @@ export default function GeneratingClient() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const setId = searchParams.get("set");
+  const materialId = searchParams.get("material");
   const supabase = createClient();
 
   const [progress, setProgress] = useState(8);
   const [stage, setStage] = useState(0);
   const [failed, setFailed] = useState(false);
+  // true while process-material is still indexing; the fake "smooth" progress
+  // below pauses so the bar can show real indexing progress instead.
+  const indexingRef = useRef(false);
+  const startedRef = useRef(false);
+
+  // Index the material (resumable, paced to the Gemini free-tier limit), then
+  // kick off answer generation. process-material returns done:false until the
+  // whole file is indexed, so we keep calling it.
+  useEffect(() => {
+    if (!setId || !materialId || startedRef.current) return;
+    startedRef.current = true;
+    indexingRef.current = true;
+
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+    (async () => {
+      try {
+        let done = false;
+        let errors = 0;
+        for (let pass = 0; !done && pass < 60; pass++) {
+          const { data, error } = await supabase.functions.invoke(
+            "process-material",
+            { body: { materialId } }
+          );
+          if (error) {
+            console.error("process-material failed:", await readFunctionError(error));
+            // safe to retry: already-stored chunks are skipped server-side
+            if (++errors >= 3) throw error;
+            await sleep(5000);
+            continue;
+          }
+          errors = 0;
+          if (data?.total > 0) {
+            const pct = (data.processed / data.total) * 100;
+            setProgress((p) => Math.max(p, 8 + pct * 0.7));
+          }
+          done = data?.done === true;
+          if (!done && data?.rateLimited) await sleep(20000);
+        }
+        if (!done) throw new Error("Indexing did not finish");
+
+        indexingRef.current = false;
+        setProgress((p) => Math.max(p, 80));
+        const gen = await supabase.functions.invoke("generate-answers", {
+          body: { questionSetId: setId },
+        });
+        if (gen.error) {
+          console.error("generate-answers failed:", await readFunctionError(gen.error));
+        }
+      } catch (err) {
+        console.error(err);
+        await supabase
+          .from("question_sets")
+          .update({ status: "error" })
+          .eq("id", setId);
+        setFailed(true);
+      }
+    })();
+  }, [setId, materialId, supabase]);
 
   useEffect(() => {
     if (!setId) return;
@@ -42,9 +103,9 @@ export default function GeneratingClient() {
         setTimeout(() => {
           router.push(`/workspace/${id}/results?set=${setId}`);
         }, 600);
-      } else {
+      } else if (!indexingRef.current) {
         // smooth fake progress while waiting on real status
-        setProgress((p) => Math.min(92, p + Math.random() * 6));
+        setProgress((p) => Math.min(92, p + Math.random() * 3));
       }
     }, 1200);
 

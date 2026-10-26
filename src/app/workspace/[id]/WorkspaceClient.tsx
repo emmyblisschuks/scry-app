@@ -11,20 +11,6 @@ import QuestionThumb from "@/components/QuestionThumb";
 import PasteQuestions from "@/components/PasteQuestions";
 import { QuestionImage } from "@/lib/types";
 
-// supabase-js hides the edge function's response body inside error.context
-// (a fetch Response). Pull the text out so failures are diagnosable.
-async function readFunctionError(err: unknown): Promise<string> {
-  const ctx = (err as { context?: Response } | null)?.context;
-  if (ctx && typeof ctx.text === "function") {
-    try {
-      return await ctx.text();
-    } catch {
-      // fall through to the generic message
-    }
-  }
-  return err instanceof Error ? err.message : String(err);
-}
-
 export default function WorkspaceClient() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -203,31 +189,12 @@ export default function WorkspaceClient() {
       );
     }
 
-    // 4. Kick off processing (Edge Functions). Material must be indexed
-    // before answers can be generated, so these run in order.
-    const processed = await supabase.functions.invoke("process-material", {
-      body: { materialId: materialRow!.id },
-    });
-    if (processed.error) {
-      // The edge function returns { error: "..." } in the response body; log
-      // it so the browser console shows WHY it failed, not just "500".
-      console.error(
-        "process-material failed:",
-        await readFunctionError(processed.error)
-      );
-      await supabase
-        .from("question_sets")
-        .update({ status: "error" })
-        .eq("id", questionSet!.id);
-    } else {
-      // don't await: generate-answers can take a while and reports progress
-      // through question_sets.status, which the generating page polls
-      void supabase.functions.invoke("generate-answers", {
-        body: { questionSetId: questionSet!.id },
-      });
-    }
-
-    router.push(`/workspace/${id}/generating?set=${questionSet!.id}`);
+    // 4. Hand off to the generating page. It indexes the material (in as many
+    // resumable passes as the free-tier rate limit needs), then starts
+    // generate-answers, and shows real progress while it does.
+    router.push(
+      `/workspace/${id}/generating?set=${questionSet!.id}&material=${materialRow!.id}`
+    );
   }
 
   return (

@@ -7,12 +7,44 @@
 // outputDimensionality so it still fits material_chunks.embedding vector(768).
 const EMBED_MODEL = "gemini-embedding-001";
 const EMBED_DIMS = 768;
-// Pinned model names get retired (gemini-2.0-flash is deprecated), so default
-// to the maintained alias and allow an override via `supabase secrets set GEMINI_MODEL=...`.
-const GENERATE_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-flash-latest";
+// Answering model: Gemini 3.5 Flash is free to call. Override without a
+// redeploy via `supabase secrets set GEMINI_MODEL=<model id>`.
+const GENERATE_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.5-flash";
 const BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
 type EmbedTask = "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY";
+
+// POST to Gemini, retrying 429/503 a couple of times and honouring the
+// "retry in Ns" hint so free-tier per-minute limits don't fail the whole run.
+async function geminiPost(
+  url: string,
+  body: unknown,
+  label: string,
+  maxRetries = 2
+): Promise<Response> {
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) return res;
+
+    const text = await res.text();
+    if ((res.status === 429 || res.status === 503) && attempt < maxRetries) {
+      const hint =
+        text.match(/retry in ([\d.]+)s/i) ??
+        text.match(/"retryDelay":\s*"(\d+)s"/);
+      const waitMs = Math.min(
+        ((hint ? parseFloat(hint[1]) : 5 * (attempt + 1)) + 1) * 1000,
+        40_000
+      );
+      await new Promise((r) => setTimeout(r, waitMs));
+      continue;
+    }
+    throw new Error(`${label} failed: ${res.status} ${text}`);
+  }
+}
 
 // Truncated gemini-embedding-001 vectors are not unit length; normalize so
 // cosine distance in pgvector behaves.
@@ -35,51 +67,31 @@ export async function embedText(
   text: string,
   taskType: EmbedTask = "RETRIEVAL_QUERY"
 ): Promise<number[]> {
-  const res = await fetch(
+  const res = await geminiPost(
     `${BASE_URL}/models/${EMBED_MODEL}:embedContent?key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(embedRequest(text, taskType)),
-    }
+    embedRequest(text, taskType),
+    "Gemini embed"
   );
-
-  if (!res.ok) {
-    throw new Error(`Gemini embed failed: ${res.status} ${await res.text()}`);
-  }
-
   const json = await res.json();
   return l2Normalize(json.embedding.values as number[]);
 }
 
-// Batch variant for indexing many chunks in a few requests (max 100 per call).
+// Batch variant: one request for many chunks (caller keeps batches small enough
+// to respect the free-tier tokens-per-minute limit).
 export async function embedTexts(
   apiKey: string,
   texts: string[],
   taskType: EmbedTask = "RETRIEVAL_DOCUMENT"
 ): Promise<number[][]> {
-  const out: number[][] = [];
-  for (let i = 0; i < texts.length; i += 100) {
-    const batch = texts.slice(i, i + 100);
-    const res = await fetch(
-      `${BASE_URL}/models/${EMBED_MODEL}:batchEmbedContents?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          requests: batch.map((t) => embedRequest(t, taskType)),
-        }),
-      }
-    );
-    if (!res.ok) {
-      throw new Error(`Gemini batch embed failed: ${res.status} ${await res.text()}`);
-    }
-    const json = await res.json();
-    for (const e of json.embeddings as { values: number[] }[]) {
-      out.push(l2Normalize(e.values));
-    }
-  }
-  return out;
+  const res = await geminiPost(
+    `${BASE_URL}/models/${EMBED_MODEL}:batchEmbedContents?key=${apiKey}`,
+    { requests: texts.map((t) => embedRequest(t, taskType)) },
+    "Gemini batch embed"
+  );
+  const json = await res.json();
+  return (json.embeddings as { values: number[] }[]).map((e) =>
+    l2Normalize(e.values)
+  );
 }
 
 export type GeneratedAnswer = {
@@ -105,27 +117,20 @@ Rules:
 - If the context does not contain information relevant to the question at all, respond with "UNSURE" on the first line, "N/A" on the second line, and CONFIDENCE: UNSURE.
 - Never fabricate a supporting sentence that isn't actually in the context.`;
 
-  const res = await fetch(
+  const res = await geminiPost(
     `${BASE_URL}/models/${GENERATE_MODEL}:generateContent?key=${apiKey}`,
     {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        systemInstruction: { parts: [{ text: systemInstruction }] },
-        contents: [
-          {
-            role: "user",
-            parts: [{ text: `Context:\n${context}\n\nQuestion:\n${question}` }],
-          },
-        ],
-        generationConfig: { temperature: 0 },
-      }),
-    }
+      systemInstruction: { parts: [{ text: systemInstruction }] },
+      contents: [
+        {
+          role: "user",
+          parts: [{ text: `Context:\n${context}\n\nQuestion:\n${question}` }],
+        },
+      ],
+      generationConfig: { temperature: 0 },
+    },
+    "Gemini generate"
   );
-
-  if (!res.ok) {
-    throw new Error(`Gemini generate failed: ${res.status} ${await res.text()}`);
-  }
 
   const json = await res.json();
   const parts: { text?: string; thought?: boolean }[] =

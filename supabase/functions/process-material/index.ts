@@ -14,6 +14,10 @@ import pdfParse from "npm:pdf-parse@1.1.1";
 // @ts-expect-error - npm specifier, resolved at deploy time by Supabase
 import mammoth from "npm:mammoth@1.8.0";
 
+const BATCH_SIZE = 20; // ~6k tokens per request
+const TOKENS_PER_MINUTE_BUDGET = 24_000; // free tier limit is 30k/min
+const TIME_BUDGET_MS = 110_000; // Edge Functions are cut off at ~150s
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
@@ -67,22 +71,71 @@ Deno.serve(async (req) => {
 
     const chunks = chunkText(rawText);
 
-    // Embed in batches (<=100 per request), then insert in a single call
-    const embeddings = await embedTexts(geminiKey, chunks, "RETRIEVAL_DOCUMENT");
-    const rows = chunks.map((content, i) => ({
-      material_id: materialId,
-      content,
-      embedding: embeddings[i],
-      page_ref: `chunk ${i + 1}`,
-    }));
-    for (let i = 0; i < rows.length; i += 200) {
+    // Resumable + rate-limit aware. Gemini's free tier allows ~30k embedding
+    // tokens/minute, so a big PDF can't be indexed in one burst. We embed in
+    // small batches, pace to stay under the limit, stop before the Edge
+    // Function wall-clock limit, and report progress. The client simply calls
+    // this again until done=true; chunks already stored are skipped.
+    const { count: existing } = await supabase
+      .from("material_chunks")
+      .select("id", { count: "exact", head: true })
+      .eq("material_id", materialId);
+
+    let index = existing ?? 0;
+    const startedAt = Date.now();
+    let windowStart = Date.now();
+    let windowTokens = 0;
+    let rateLimited = false;
+
+    while (index < chunks.length) {
+      const batch = chunks.slice(index, index + BATCH_SIZE);
+      const estTokens = Math.ceil(batch.join("").length / 3); // conservative
+
+      if (windowTokens + estTokens > TOKENS_PER_MINUTE_BUDGET) {
+        const waitMs = Math.max(0, 60_000 - (Date.now() - windowStart)) + 500;
+        if (Date.now() - startedAt + waitMs > TIME_BUDGET_MS) break;
+        await new Promise((r) => setTimeout(r, waitMs));
+        windowStart = Date.now();
+        windowTokens = 0;
+      }
+      if (Date.now() - startedAt > TIME_BUDGET_MS) break;
+
+      let embeddings: number[][];
+      try {
+        embeddings = await embedTexts(geminiKey, batch, "RETRIEVAL_DOCUMENT");
+      } catch (e) {
+        if (String(e).includes(" 429 ")) {
+          rateLimited = true;
+          break;
+        }
+        throw e;
+      }
+
       const { error: insertError } = await supabase
         .from("material_chunks")
-        .insert(rows.slice(i, i + 200));
-      if (insertError) throw new Error(`Chunk insert failed: ${insertError.message}`);
+        .insert(
+          batch.map((content, i) => ({
+            material_id: materialId,
+            content,
+            embedding: embeddings[i],
+            page_ref: `chunk ${index + i + 1}`,
+          }))
+        );
+      if (insertError) {
+        throw new Error(`Chunk insert failed: ${insertError.message}`);
+      }
+
+      windowTokens += estTokens;
+      index += batch.length;
     }
 
-    return jsonResponse({ success: true, chunkCount: chunks.length });
+    return jsonResponse({
+      success: true,
+      done: index >= chunks.length,
+      processed: index,
+      total: chunks.length,
+      rateLimited,
+    });
   } catch (err) {
     console.error(err);
     return jsonResponse({ error: String(err) }, 500);
