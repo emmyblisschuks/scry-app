@@ -8,6 +8,7 @@ import { detectBlur } from "@/lib/blurDetection";
 import { extractText } from "@/lib/ocr";
 import UploadZone, { FileChip } from "@/components/UploadZone";
 import QuestionThumb from "@/components/QuestionThumb";
+import PasteQuestions from "@/components/PasteQuestions";
 import { QuestionImage } from "@/lib/types";
 
 export default function WorkspaceClient() {
@@ -19,6 +20,9 @@ export default function WorkspaceClient() {
   const [subjectTag, setSubjectTag] = useState<string | null>(null);
   const [materialFile, setMaterialFile] = useState<File | null>(null);
   const [questionImages, setQuestionImages] = useState<QuestionImage[]>([]);
+  const [textQuestions, setTextQuestions] = useState<
+    { id: string; text: string }[]
+  >([]);
   const [starting, setStarting] = useState(false);
 
   const loadWorkspace = useCallback(async () => {
@@ -84,9 +88,22 @@ export default function WorkspaceClient() {
     setQuestionImages((prev) => prev.filter((img) => img.id !== imgId));
   }
 
+  function addTextQuestions(texts: string[]) {
+    setTextQuestions((prev) => [
+      ...prev,
+      ...texts.map((text) => ({ id: crypto.randomUUID(), text })),
+    ]);
+  }
+
+  function removeTextQuestion(qid: string) {
+    setTextQuestions((prev) => prev.filter((q) => q.id !== qid));
+  }
+
   const ocrInProgress = questionImages.some((i) => !i.ocrText);
   const canGenerate =
-    materialFile !== null && questionImages.length > 0 && !ocrInProgress;
+    materialFile !== null &&
+    (questionImages.length > 0 || textQuestions.length > 0) &&
+    !ocrInProgress;
   const blurryCount = questionImages.filter((i) => i.isBlurry).length;
 
   async function handleGenerate() {
@@ -137,10 +154,26 @@ export default function WorkspaceClient() {
           image_path: path,
           ocr_text: img.ocrText,
           is_blurry: img.isBlurry,
+          source: "image",
           order_index: index,
         });
       })
     );
+
+    // 3b. Pasted text questions: no image, the text goes straight to ocr_text
+    // (the field generate-answers reads), ordered after the screenshots
+    if (textQuestions.length > 0) {
+      await supabase.from("questions").insert(
+        textQuestions.map((q, i) => ({
+          question_set_id: questionSet!.id,
+          image_path: null,
+          ocr_text: q.text,
+          is_blurry: false,
+          source: "text",
+          order_index: questionImages.length + i,
+        }))
+      );
+    }
 
     // 4. Kick off processing (Edge Functions)
     await supabase.functions.invoke("process-material", {
@@ -195,7 +228,7 @@ export default function WorkspaceClient() {
         <section className="mb-8">
           <h2 className="mb-1 font-semibold text-wine">Questions</h2>
           <p className="mb-3 text-sm text-muted">
-            Upload screenshots of your questions.
+            Upload screenshots of your questions, or paste the text.
           </p>
 
           <UploadZone kind="questions" onFiles={handleQuestions} />
@@ -212,6 +245,12 @@ export default function WorkspaceClient() {
               ))}
             </div>
           )}
+
+          <PasteQuestions
+            questions={textQuestions}
+            onAdd={addTextQuestions}
+            onRemove={removeTextQuestion}
+          />
 
           {blurryCount > 0 && (
             <div className="mt-3 flex items-center gap-2 rounded-xl bg-warn/10 px-4 py-3 text-sm text-ink">
