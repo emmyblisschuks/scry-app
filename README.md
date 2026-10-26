@@ -8,7 +8,7 @@ from your own notes, no outside knowledge, no guessing.
 - Next.js (App Router, TypeScript, Tailwind v4)
 - Supabase (Postgres + pgvector, Auth via Google OAuth, Storage, Edge Functions)
 - Tesseract.js for client-side OCR + blur detection on question screenshots
-- Gemini API (`text-embedding-004` for embeddings, `gemini-2.0-flash` for answer generation)
+- Gemini API (`gemini-embedding-001` @ 768 dims for embeddings, `gemini-flash-latest` for answer generation; override with the `GEMINI_MODEL` secret)
 
 ## Local setup
 

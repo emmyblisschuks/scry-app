@@ -11,6 +11,20 @@ import QuestionThumb from "@/components/QuestionThumb";
 import PasteQuestions from "@/components/PasteQuestions";
 import { QuestionImage } from "@/lib/types";
 
+// supabase-js hides the edge function's response body inside error.context
+// (a fetch Response). Pull the text out so failures are diagnosable.
+async function readFunctionError(err: unknown): Promise<string> {
+  const ctx = (err as { context?: Response } | null)?.context;
+  if (ctx && typeof ctx.text === "function") {
+    try {
+      return await ctx.text();
+    } catch {
+      // fall through to the generic message
+    }
+  }
+  return err instanceof Error ? err.message : String(err);
+}
+
 export default function WorkspaceClient() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
@@ -195,6 +209,12 @@ export default function WorkspaceClient() {
       body: { materialId: materialRow!.id },
     });
     if (processed.error) {
+      // The edge function returns { error: "..." } in the response body; log
+      // it so the browser console shows WHY it failed, not just "500".
+      console.error(
+        "process-material failed:",
+        await readFunctionError(processed.error)
+      );
       await supabase
         .from("question_sets")
         .update({ status: "error" })
