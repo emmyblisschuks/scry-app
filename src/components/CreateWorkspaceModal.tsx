@@ -12,13 +12,18 @@ export default function CreateWorkspaceModal({
 }) {
   const [name, setName] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   async function handleCreate() {
-    if (!name.trim()) return;
+    if (!name.trim() || submitting) return;
     setSubmitting(true);
-    const subjectTag = guessSubject(name);
-    await onCreate(name.trim(), subjectTag);
-    setSubmitting(false);
+    setError(null);
+    try {
+      await onCreate(name.trim(), guessSubject(name));
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong.");
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -41,10 +46,19 @@ export default function CreateWorkspaceModal({
           autoFocus
           value={name}
           onChange={(e) => setName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") onClose();
+            if (e.key === "Enter") handleCreate();
+          }}
           placeholder="e.g. CIT301 or Biology 101"
           className="w-full rounded-xl border border-cream-dark bg-white px-4 py-3 text-sm text-ink outline-none focus:border-wine"
         />
+
+        {error && (
+          <p role="alert" className="mt-3 text-xs text-wine-dark">
+            {error}
+          </p>
+        )}
 
         <button
           onClick={handleCreate}
@@ -60,11 +74,12 @@ export default function CreateWorkspaceModal({
 
 function guessSubject(name: string) {
   const lower = name.toLowerCase();
-  if (/(math|calc|algebra|cit3)/.test(lower)) return "Mathematics";
-  if (/(cs|comput|program|cit)/.test(lower)) return "Computer Science";
-  if (/(phy)/.test(lower)) return "Physics";
+  if (/(phy|mechanic)/.test(lower)) return "Physics";
   if (/(chem)/.test(lower)) return "Chemistry";
-  if (/(bio)/.test(lower)) return "Biology";
-  if (/(eng|lit)/.test(lower)) return "English";
+  if (/(bio|genetic)/.test(lower)) return "Biology";
+  if (/(math|calc|algebra|stat|geometry)/.test(lower)) return "Mathematics";
+  if (/(\bcs|\bcit|\bcsc|comput|program|data struct|software)/.test(lower))
+    return "Computer Science";
+  if (/(\beng|liter|\blit\b|grammar)/.test(lower)) return "English";
   return "General";
 }

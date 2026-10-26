@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Plus, Sparkles } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { Workspace } from "@/lib/types";
@@ -8,40 +9,64 @@ import WorkspaceCard from "@/components/WorkspaceCard";
 import CreateWorkspaceModal from "@/components/CreateWorkspaceModal";
 import DeleteConfirmModal from "@/components/DeleteConfirmModal";
 import Logo from "@/components/Logo";
+import ProfileMenu, { ProfileUser } from "@/components/ProfileMenu";
 
 export default function DashboardPage() {
-  const supabase = createClient();
+  const router = useRouter();
+  const [supabase] = useState(() => createClient());
   const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
   const [loading, setLoading] = useState(true);
-  const [avatarUrl, setAvatarUrl] = useState<string | null>(null);
+  const [profile, setProfile] = useState<ProfileUser | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [showCreate, setShowCreate] = useState(false);
   const [pendingDelete, setPendingDelete] = useState<Workspace | null>(null);
 
   const load = useCallback(async () => {
-    setLoading(true);
     const {
       data: { user },
     } = await supabase.auth.getUser();
-    setAvatarUrl(user?.user_metadata?.avatar_url ?? null);
+    if (user) {
+      setProfile({
+        email: user.email ?? "",
+        name:
+          (user.user_metadata?.full_name as string | undefined) ??
+          (user.user_metadata?.name as string | undefined) ??
+          null,
+        avatarUrl: (user.user_metadata?.avatar_url as string | undefined) ?? null,
+      });
+    }
 
-    const { data: ws } = await supabase
+    // answers hang off questions, not question_sets, so the embed has to go
+    // workspaces -> question_sets -> questions -> answers
+    const { data: ws, error: loadError } = await supabase
       .from("workspaces")
-      .select("*, question_sets(answers:answers(count))")
+      .select("*, question_sets(questions(answers(count)))")
       .order("created_at", { ascending: false });
 
-    const mapped: Workspace[] = (ws ?? []).map((w) => {
-      type Row = {
-        id: string;
-        user_id: string;
-        name: string;
-        subject_tag: string | null;
-        created_at: string;
-        question_sets?: { answers?: { count: number }[] }[];
-      };
-      const row = w as Row;
+    if (loadError) {
+      setError(`Couldn't load your workspaces: ${loadError.message}`);
+      setLoading(false);
+      return;
+    }
+
+    type Row = {
+      id: string;
+      user_id: string;
+      name: string;
+      subject_tag: string | null;
+      created_at: string;
+      question_sets?: { questions?: { answers?: { count: number }[] }[] }[];
+    };
+
+    const mapped: Workspace[] = ((ws ?? []) as Row[]).map((row) => {
       const answerCount =
         row.question_sets?.reduce(
-          (sum, qs) => sum + (qs.answers?.[0]?.count ?? 0),
+          (sum, qs) =>
+            sum +
+            (qs.questions?.reduce(
+              (qSum, q) => qSum + (q.answers?.[0]?.count ?? 0),
+              0
+            ) ?? 0),
           0
         ) ?? 0;
       return {
@@ -54,6 +79,7 @@ export default function DashboardPage() {
       };
     });
 
+    setError(null);
     setWorkspaces(mapped);
     setLoading(false);
   }, [supabase]);
@@ -66,22 +92,38 @@ export default function DashboardPage() {
     const {
       data: { user },
     } = await supabase.auth.getUser();
-    if (!user) return;
+    if (!user) {
+      throw new Error("Your session expired. Please sign in again.");
+    }
 
-    await supabase.from("workspaces").insert({
+    const { error: insertError } = await supabase.from("workspaces").insert({
       user_id: user.id,
       name,
       subject_tag: subjectTag,
     });
+    if (insertError) throw new Error(insertError.message);
+
     setShowCreate(false);
-    load();
+    await load();
   }
 
   async function deleteWorkspace() {
     if (!pendingDelete) return;
-    await supabase.from("workspaces").delete().eq("id", pendingDelete.id);
+    const { error: deleteError } = await supabase
+      .from("workspaces")
+      .delete()
+      .eq("id", pendingDelete.id);
+    if (deleteError) {
+      setError(`Couldn't delete workspace: ${deleteError.message}`);
+    }
     setPendingDelete(null);
-    load();
+    await load();
+  }
+
+  async function signOut() {
+    await supabase.auth.signOut();
+    router.push("/");
+    router.refresh();
   }
 
   return (
@@ -94,17 +136,25 @@ export default function DashboardPage() {
               Scry
             </span>
           </div>
-          {avatarUrl && (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img
-              src={avatarUrl}
-              alt="Profile"
-              className="h-9 w-9 rounded-full"
-            />
-          )}
+          {profile && <ProfileMenu user={profile} onSignOut={signOut} />}
         </header>
 
         <h1 className="mb-6 text-2xl font-bold text-ink">My Workspaces</h1>
+
+        {error && (
+          <div
+            role="alert"
+            className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-wine/20 bg-wine/5 px-4 py-3 text-sm text-wine-dark"
+          >
+            <span>{error}</span>
+            <button
+              onClick={() => setError(null)}
+              className="font-medium underline"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {loading ? (
           <p className="text-sm text-muted">Loading…</p>

@@ -1,7 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { Eye, EyeOff, Loader2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import Logo from "./Logo";
 
@@ -9,7 +11,7 @@ type Mode = "signin" | "signup";
 
 export default function AuthCard() {
   const router = useRouter();
-  const supabase = createClient();
+  const [supabase] = useState(() => createClient());
 
   const [mode, setMode] = useState<Mode>("signin");
   const [email, setEmail] = useState("");
@@ -17,14 +19,29 @@ export default function AuthCard() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [checkEmail, setCheckEmail] = useState(false);
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get("error") === "auth_failed") {
+      setError("Sign-in didn't complete. Please try again.");
+    }
+  }, []);
 
   async function signInWithGoogle() {
-    await supabase.auth.signInWithOAuth({
+    setError(null);
+    setGoogleLoading(true);
+    const { error } = await supabase.auth.signInWithOAuth({
       provider: "google",
       options: {
         redirectTo: `${window.location.origin}/auth/callback`,
       },
     });
+    // on success the browser navigates away; only reset if it failed
+    if (error) {
+      setGoogleLoading(false);
+      setError(error.message);
+    }
   }
 
   async function handleEmailAuth(e: React.FormEvent) {
@@ -56,6 +73,7 @@ export default function AuthCard() {
         return;
       }
       router.push("/dashboard");
+      router.refresh();
     }
   }
 
@@ -84,7 +102,7 @@ export default function AuthCard() {
   }
 
   return (
-    <div className="flex w-full max-w-sm flex-col items-center gap-6 rounded-3xl bg-white/60 p-10 text-center shadow-sm">
+    <div className="flex w-full max-w-sm animate-[scaleIn_0.25s_ease-out] flex-col items-center gap-6 rounded-3xl bg-white/60 p-10 text-center shadow-sm backdrop-blur">
       <Logo size={56} />
       <div className="flex flex-col gap-1">
         <h1 className="font-serif text-3xl font-bold text-wine">Scry</h1>
@@ -93,10 +111,11 @@ export default function AuthCard() {
 
       <button
         onClick={signInWithGoogle}
-        className="flex w-full items-center justify-center gap-3 rounded-full bg-wine px-6 py-3 font-medium text-cream shadow-md transition active:scale-95"
+        disabled={googleLoading || loading}
+        className="flex w-full items-center justify-center gap-3 rounded-full bg-wine px-6 py-3 font-medium text-cream shadow-md transition hover:bg-wine-dark hover:shadow-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-wine active:scale-95 disabled:opacity-60"
       >
-        <GoogleIcon />
-        Continue with Google
+        {googleLoading ? <Loader2 size={18} className="animate-spin" /> : <GoogleIcon />}
+        {googleLoading ? "Redirecting…" : "Continue with Google"}
       </button>
 
       <div className="flex w-full items-center gap-3">
@@ -110,26 +129,42 @@ export default function AuthCard() {
           type="email"
           required
           placeholder="Email"
+          autoComplete="email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
           className="w-full rounded-xl border border-cream-dark bg-white px-4 py-3 text-sm text-ink outline-none focus:border-wine"
         />
-        <input
-          type="password"
-          required
-          minLength={6}
-          placeholder="Password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          className="w-full rounded-xl border border-cream-dark bg-white px-4 py-3 text-sm text-ink outline-none focus:border-wine"
-        />
+        <div className="relative">
+          <input
+            type={showPassword ? "text" : "password"}
+            required
+            minLength={6}
+            placeholder="Password"
+            autoComplete={mode === "signin" ? "current-password" : "new-password"}
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full rounded-xl border border-cream-dark bg-white px-4 py-3 pr-11 text-sm text-ink outline-none transition focus:border-wine focus:ring-2 focus:ring-wine/15"
+          />
+          <button
+            type="button"
+            onClick={() => setShowPassword((v) => !v)}
+            aria-label={showPassword ? "Hide password" : "Show password"}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-muted transition hover:text-wine"
+          >
+            {showPassword ? <EyeOff size={18} /> : <Eye size={18} />}
+          </button>
+        </div>
 
-        {error && <p className="text-left text-xs text-wine-dark">{error}</p>}
+        {error && (
+          <p role="alert" className="text-left text-xs text-wine-dark">
+            {error}
+          </p>
+        )}
 
         <button
           type="submit"
-          disabled={loading}
-          className="w-full rounded-full border border-wine px-6 py-3 font-medium text-wine transition active:scale-95 disabled:opacity-50"
+          disabled={loading || googleLoading}
+          className="w-full rounded-full border border-wine px-6 py-3 font-medium text-wine transition hover:bg-wine hover:text-cream active:scale-95 disabled:opacity-50"
         >
           {loading
             ? "Please wait…"
@@ -144,7 +179,7 @@ export default function AuthCard() {
           setMode(mode === "signin" ? "signup" : "signin");
           setError(null);
         }}
-        className="text-sm text-muted underline"
+        className="text-sm text-muted underline transition hover:text-wine"
       >
         {mode === "signin"
           ? "New here? Create an account"
@@ -153,9 +188,9 @@ export default function AuthCard() {
 
       <p className="text-xs text-muted">
         By continuing you agree to{" "}
-        <a href="/terms" className="underline">
+        <Link href="/terms" className="underline hover:text-wine">
           Terms
-        </a>
+        </Link>
       </p>
     </div>
   );
