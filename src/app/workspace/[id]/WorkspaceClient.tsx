@@ -57,31 +57,42 @@ export default function WorkspaceClient() {
     }));
     setQuestionImages((prev) => [...prev, ...placeholders]);
 
-    placeholders.forEach(async (item) => {
-      const [isBlurry, ocrText] = await Promise.all([
-        detectBlur(item.file),
-        extractText(item.file),
+    placeholders.forEach((item) => runOcr(item.id, item.file));
+  }
+
+  // OCR can legitimately return "" (dark/graphic screenshots) or throw (worker
+  // failed to load). Track completion explicitly so neither case leaves the
+  // Generate button disabled forever.
+  async function runOcr(imgId: string, file: File) {
+    let isBlurry = false;
+    let ocrText = "";
+    let status: QuestionImage["status"] = "done";
+    try {
+      [isBlurry, ocrText] = await Promise.all([
+        detectBlur(file),
+        extractText(file),
       ]);
-      setQuestionImages((prev) =>
-        prev.map((img) =>
-          img.id === item.id ? { ...img, isBlurry, ocrText } : img
-        )
-      );
-    });
+    } catch (err) {
+      console.error("OCR failed", err);
+      status = "error";
+    }
+    setQuestionImages((prev) =>
+      prev.map((img) =>
+        img.id === imgId ? { ...img, isBlurry, ocrText, status } : img
+      )
+    );
   }
 
   async function replaceImage(imgId: string, file: File) {
     const previewUrl = URL.createObjectURL(file);
     setQuestionImages((prev) =>
-      prev.map((img) => (img.id === imgId ? { ...img, file, previewUrl } : img))
+      prev.map((img) =>
+        img.id === imgId
+          ? { ...img, file, previewUrl, status: "pending", ocrText: "" }
+          : img
+      )
     );
-    const [isBlurry, ocrText] = await Promise.all([
-      detectBlur(file),
-      extractText(file),
-    ]);
-    setQuestionImages((prev) =>
-      prev.map((img) => (img.id === imgId ? { ...img, isBlurry, ocrText } : img))
-    );
+    await runOcr(imgId, file);
   }
 
   function removeImage(imgId: string) {
@@ -99,7 +110,10 @@ export default function WorkspaceClient() {
     setTextQuestions((prev) => prev.filter((q) => q.id !== qid));
   }
 
-  const ocrInProgress = questionImages.some((i) => !i.ocrText);
+  const ocrInProgress = questionImages.some((i) => i.status === "pending");
+  const unreadableCount = questionImages.filter(
+    (i) => i.status !== "pending" && !i.ocrText.trim()
+  ).length;
   const canGenerate =
     materialFile !== null &&
     (questionImages.length > 0 || textQuestions.length > 0) &&
@@ -252,6 +266,15 @@ export default function WorkspaceClient() {
             onRemove={removeTextQuestion}
           />
 
+          {unreadableCount > 0 && (
+            <div className="mt-3 flex items-center gap-2 rounded-xl bg-warn/10 px-4 py-3 text-sm text-ink">
+              <AlertTriangle size={16} className="shrink-0 text-warn" />
+              {unreadableCount === 1
+                ? "Couldn't read text in 1 screenshot. It will be marked unsure; paste its text instead for an answer."
+                : `Couldn't read text in ${unreadableCount} screenshots. They will be marked unsure; paste their text instead for answers.`}
+            </div>
+          )}
+
           {blurryCount > 0 && (
             <div className="mt-3 flex items-center gap-2 rounded-xl bg-warn/10 px-4 py-3 text-sm text-ink">
               <AlertTriangle size={16} className="shrink-0 text-warn" />
@@ -270,6 +293,15 @@ export default function WorkspaceClient() {
           <Sparkles size={18} />
           {starting ? "Starting…" : "Generate Answers"}
         </button>
+        {!canGenerate && !starting && (
+          <p className="mt-3 text-center text-xs text-muted">
+            {!materialFile
+              ? "Upload your study material to continue."
+              : ocrInProgress
+              ? "Reading your screenshots…"
+              : "Add at least one question to continue."}
+          </p>
+        )}
       </div>
     </main>
   );
