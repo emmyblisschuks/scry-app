@@ -2,20 +2,45 @@
 // Mirrors src/lib/gemini/client.ts but kept separate since Edge Functions
 // don't share a bundler with the Next.js app.
 
-const EMBED_MODEL = "text-embedding-004"; // 768 dimensions, matches material_chunks.embedding
-const GENERATE_MODEL = "gemini-2.0-flash";
+// text-embedding-004 was shut down by Google on 2026-01-14 (404 NOT_FOUND).
+// gemini-embedding-001 outputs 3072 dims by default; we request 768 via
+// outputDimensionality so it still fits material_chunks.embedding vector(768).
+const EMBED_MODEL = "gemini-embedding-001";
+const EMBED_DIMS = 768;
+// Pinned model names get retired (gemini-2.0-flash is deprecated), so default
+// to the maintained alias and allow an override via `supabase secrets set GEMINI_MODEL=...`.
+const GENERATE_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-flash-latest";
 const BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
-export async function embedText(apiKey: string, text: string): Promise<number[]> {
+type EmbedTask = "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY";
+
+// Truncated gemini-embedding-001 vectors are not unit length; normalize so
+// cosine distance in pgvector behaves.
+function l2Normalize(v: number[]): number[] {
+  const norm = Math.sqrt(v.reduce((sum, x) => sum + x * x, 0));
+  return norm === 0 ? v : v.map((x) => x / norm);
+}
+
+function embedRequest(text: string, taskType: EmbedTask) {
+  return {
+    model: `models/${EMBED_MODEL}`,
+    content: { parts: [{ text }] },
+    taskType,
+    outputDimensionality: EMBED_DIMS,
+  };
+}
+
+export async function embedText(
+  apiKey: string,
+  text: string,
+  taskType: EmbedTask = "RETRIEVAL_QUERY"
+): Promise<number[]> {
   const res = await fetch(
     `${BASE_URL}/models/${EMBED_MODEL}:embedContent?key=${apiKey}`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: `models/${EMBED_MODEL}`,
-        content: { parts: [{ text }] },
-      }),
+      body: JSON.stringify(embedRequest(text, taskType)),
     }
   );
 
@@ -24,7 +49,37 @@ export async function embedText(apiKey: string, text: string): Promise<number[]>
   }
 
   const json = await res.json();
-  return json.embedding.values as number[];
+  return l2Normalize(json.embedding.values as number[]);
+}
+
+// Batch variant for indexing many chunks in a few requests (max 100 per call).
+export async function embedTexts(
+  apiKey: string,
+  texts: string[],
+  taskType: EmbedTask = "RETRIEVAL_DOCUMENT"
+): Promise<number[][]> {
+  const out: number[][] = [];
+  for (let i = 0; i < texts.length; i += 100) {
+    const batch = texts.slice(i, i + 100);
+    const res = await fetch(
+      `${BASE_URL}/models/${EMBED_MODEL}:batchEmbedContents?key=${apiKey}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          requests: batch.map((t) => embedRequest(t, taskType)),
+        }),
+      }
+    );
+    if (!res.ok) {
+      throw new Error(`Gemini batch embed failed: ${res.status} ${await res.text()}`);
+    }
+    const json = await res.json();
+    for (const e of json.embeddings as { values: number[] }[]) {
+      out.push(l2Normalize(e.values));
+    }
+  }
+  return out;
 }
 
 export type GeneratedAnswer = {
@@ -73,7 +128,12 @@ Rules:
   }
 
   const json = await res.json();
-  const text: string = json.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
+  const parts: { text?: string; thought?: boolean }[] =
+    json.candidates?.[0]?.content?.parts ?? [];
+  const text: string = parts
+    .filter((p) => !p.thought)
+    .map((p) => p.text ?? "")
+    .join("");
   const lines = text.trim().split("\n").map((l: string) => l.trim());
 
   const answer = lines[0] ?? "UNSURE";

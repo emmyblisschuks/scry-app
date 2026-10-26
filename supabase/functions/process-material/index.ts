@@ -7,7 +7,7 @@
 import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
 import { chunkText } from "../_shared/chunk.ts";
-import { embedText } from "../_shared/gemini.ts";
+import { embedTexts } from "../_shared/gemini.ts";
 
 // @ts-expect-error - npm specifier, resolved at deploy time by Supabase
 import pdfParse from "npm:pdf-parse@1.1.1";
@@ -67,16 +67,19 @@ Deno.serve(async (req) => {
 
     const chunks = chunkText(rawText);
 
-    // Embed + insert sequentially to stay well under Gemini rate limits;
-    // swap for a small concurrency pool if this becomes a bottleneck.
-    for (let i = 0; i < chunks.length; i++) {
-      const embedding = await embedText(geminiKey, chunks[i]);
-      await supabase.from("material_chunks").insert({
-        material_id: materialId,
-        content: chunks[i],
-        embedding,
-        page_ref: `chunk ${i + 1}`,
-      });
+    // Embed in batches (<=100 per request), then insert in a single call
+    const embeddings = await embedTexts(geminiKey, chunks, "RETRIEVAL_DOCUMENT");
+    const rows = chunks.map((content, i) => ({
+      material_id: materialId,
+      content,
+      embedding: embeddings[i],
+      page_ref: `chunk ${i + 1}`,
+    }));
+    for (let i = 0; i < rows.length; i += 200) {
+      const { error: insertError } = await supabase
+        .from("material_chunks")
+        .insert(rows.slice(i, i + 200));
+      if (insertError) throw new Error(`Chunk insert failed: ${insertError.message}`);
     }
 
     return jsonResponse({ success: true, chunkCount: chunks.length });

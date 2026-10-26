@@ -4,8 +4,8 @@
  * GEMINI_API_KEY to be present as a server-side secret.
  */
 
-const EMBED_MODEL = "text-embedding-004"; // 768 dimensions
-const GENERATE_MODEL = "gemini-2.0-flash";
+const EMBED_MODEL = "gemini-embedding-001"; // request outputDimensionality: 768
+const GENERATE_MODEL = "gemini-flash-latest";
 
 const BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
@@ -18,6 +18,7 @@ export async function embedText(apiKey: string, text: string): Promise<number[]>
       body: JSON.stringify({
         model: `models/${EMBED_MODEL}`,
         content: { parts: [{ text }] },
+        outputDimensionality: 768,
       }),
     }
   );

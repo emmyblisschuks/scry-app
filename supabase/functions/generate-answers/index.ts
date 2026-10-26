@@ -13,12 +13,14 @@ import { embedText, generateAnswer } from "../_shared/gemini.ts";
 const MATCH_COUNT = 4; // top-k chunks to retrieve per question
 
 Deno.serve(async (req) => {
+  let questionSetId: string | undefined;
+  let supabaseForError: ReturnType<typeof createClient> | null = null;
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
-    const { questionSetId } = await req.json();
+    ({ questionSetId } = await req.json());
     if (!questionSetId) {
       return jsonResponse({ error: "questionSetId is required" }, 400);
     }
@@ -27,6 +29,7 @@ Deno.serve(async (req) => {
       Deno.env.get("SUPABASE_URL")!,
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
     );
+    supabaseForError = supabase;
     const geminiKey = Deno.env.get("GEMINI_API_KEY")!;
 
     await supabase
@@ -77,7 +80,7 @@ Deno.serve(async (req) => {
         continue;
       }
 
-      const questionEmbedding = await embedText(geminiKey, question.ocr_text);
+      const questionEmbedding = await embedText(geminiKey, question.ocr_text, "RETRIEVAL_QUERY");
 
       // pgvector cosine-distance search via RPC (see sql/match_chunks.sql)
       const { data: matches } = await supabase.rpc("match_material_chunks", {
@@ -126,6 +129,13 @@ Deno.serve(async (req) => {
     return jsonResponse({ success: true, answered: questions.length });
   } catch (err) {
     console.error(err);
+    // don't leave the client polling a set that will never finish
+    if (questionSetId && supabaseForError) {
+      await supabaseForError
+        .from("question_sets")
+        .update({ status: "error" })
+        .eq("id", questionSetId);
+    }
     return jsonResponse({ error: String(err) }, 500);
   }
 });

@@ -21,6 +21,7 @@ export default function GeneratingClient() {
 
   const [progress, setProgress] = useState(8);
   const [stage, setStage] = useState(0);
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (!setId) return;
@@ -32,7 +33,10 @@ export default function GeneratingClient() {
         .eq("id", setId)
         .single();
 
-      if (data?.status === "done") {
+      if (data?.status === "error") {
+        clearInterval(poll);
+        setFailed(true);
+      } else if (data?.status === "done") {
         setProgress(100);
         clearInterval(poll);
         setTimeout(() => {
@@ -63,6 +67,23 @@ export default function GeneratingClient() {
         <p className="text-sm text-muted">Better notes. Clearer answers.</p>
       </div>
 
+      {failed ? (
+        <div className="z-10 my-12 flex max-w-sm flex-col items-center gap-4 text-center">
+          <p className="text-lg font-semibold text-wine">
+            Something went wrong generating your answers.
+          </p>
+          <p className="text-sm text-muted">
+            Your files are saved. Go back and try again in a moment.
+          </p>
+          <button
+            onClick={() => router.push(`/workspace/${id}`)}
+            className="rounded-full bg-wine px-6 py-3 text-sm font-medium text-cream"
+          >
+            Back to workspace
+          </button>
+        </div>
+      ) : (
+      <>
       <div className="relative z-10 my-12 flex h-56 w-56 items-center justify-center">
         <svg className="absolute h-full w-full -rotate-90" viewBox="0 0 100 100">
           <circle
@@ -103,6 +124,8 @@ export default function GeneratingClient() {
           </p>
         ))}
       </div>
+      </>
+      )}
     </main>
   );
 }

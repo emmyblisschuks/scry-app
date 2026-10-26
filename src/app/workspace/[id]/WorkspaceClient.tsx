@@ -189,13 +189,23 @@ export default function WorkspaceClient() {
       );
     }
 
-    // 4. Kick off processing (Edge Functions)
-    await supabase.functions.invoke("process-material", {
+    // 4. Kick off processing (Edge Functions). Material must be indexed
+    // before answers can be generated, so these run in order.
+    const processed = await supabase.functions.invoke("process-material", {
       body: { materialId: materialRow!.id },
     });
-    await supabase.functions.invoke("generate-answers", {
-      body: { questionSetId: questionSet!.id },
-    });
+    if (processed.error) {
+      await supabase
+        .from("question_sets")
+        .update({ status: "error" })
+        .eq("id", questionSet!.id);
+    } else {
+      // don't await: generate-answers can take a while and reports progress
+      // through question_sets.status, which the generating page polls
+      void supabase.functions.invoke("generate-answers", {
+        body: { questionSetId: questionSet!.id },
+      });
+    }
 
     router.push(`/workspace/${id}/generating?set=${questionSet!.id}`);
   }
