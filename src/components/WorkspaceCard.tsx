@@ -28,7 +28,16 @@ export default function WorkspaceCard({
         <Trash2 size={16} />
       </button>
 
-      <Link href={`/workspace/${workspace.id}`} className="block">
+      <Link
+        // finished answers open straight away; "Back to Workspace" there leads
+        // to the upload screen for adding more questions
+        href={
+          workspace.latest_set_id
+            ? `/workspace/${workspace.id}/results?set=${workspace.latest_set_id}`
+            : `/workspace/${workspace.id}`
+        }
+        className="block"
+      >
         {workspace.subject_tag && (
           <span
             className="inline-block rounded-full px-3 py-1 text-xs font-medium"

@@ -2,14 +2,26 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, AlertTriangle, Sparkles } from "lucide-react";
+import { ArrowLeft, AlertTriangle, Sparkles, DatabaseZap, History } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { detectBlur } from "@/lib/blurDetection";
 import { extractText } from "@/lib/ocr";
 import UploadZone, { FileChip } from "@/components/UploadZone";
 import QuestionThumb from "@/components/QuestionThumb";
 import PasteQuestions from "@/components/PasteQuestions";
-import { QuestionImage } from "@/lib/types";
+import { hashFile } from "@/lib/fileHash";
+import { Material, QuestionImage } from "@/lib/types";
+
+// What to do with a newly picked study-material file, decided by its hash:
+//  reuse  - identical file already indexed in THIS workspace (skip everything)
+//  link   - identical file already indexed in ANOTHER workspace (point at its chunks)
+//  update - same file name here, new content (re-embed only changed chunks)
+//  new    - never seen before
+type MaterialPlan =
+  | { kind: "new"; file: File; hash: string | null }
+  | { kind: "update"; file: File; hash: string | null; target: Material }
+  | { kind: "reuse"; file: File; hash: string; target: Material }
+  | { kind: "link"; file: File; hash: string; sourceId: string; fromWorkspace: string };
 
 export default function WorkspaceClient() {
   const { id } = useParams<{ id: string }>();
@@ -18,7 +30,14 @@ export default function WorkspaceClient() {
 
   const [workspaceName, setWorkspaceName] = useState("");
   const [subjectTag, setSubjectTag] = useState<string | null>(null);
-  const [materialFile, setMaterialFile] = useState<File | null>(null);
+  const [plan, setPlan] = useState<MaterialPlan | null>(null);
+  const [allMaterials, setAllMaterials] = useState<Material[]>([]);
+  const [showUpload, setShowUpload] = useState(false);
+  const [checkingFile, setCheckingFile] = useState(false);
+  const [genError, setGenError] = useState<string | null>(null);
+  const [pastSets, setPastSets] = useState<
+    { id: string; created_at: string; count: number }[]
+  >([]);
   const [questionImages, setQuestionImages] = useState<QuestionImage[]>([]);
   const [textQuestions, setTextQuestions] = useState<
     { id: string; text: string }[]
@@ -35,14 +54,91 @@ export default function WorkspaceClient() {
       setWorkspaceName(data.name);
       setSubjectTag(data.subject_tag);
     }
+
+    // what this workspace already remembers
+    const { data: mats } = await supabase
+      .from("materials")
+      .select("*")
+      .eq("workspace_id", id)
+      .order("uploaded_at", { ascending: false });
+    setAllMaterials((mats as Material[]) ?? []);
+
+    // finished runs, so earlier answers are one tap away
+    const { data: sets } = await supabase
+      .from("question_sets")
+      .select("id, created_at, questions(answers(count))")
+      .eq("workspace_id", id)
+      .eq("status", "done")
+      .order("created_at", { ascending: false });
+    type SetRow = {
+      id: string;
+      created_at: string;
+      questions?: { answers?: { count: number }[] }[];
+    };
+    setPastSets(
+      ((sets as SetRow[]) ?? [])
+        .map((r) => ({
+          id: r.id,
+          created_at: r.created_at,
+          count:
+            r.questions?.reduce((n, q) => n + (q.answers?.[0]?.count ?? 0), 0) ?? 0,
+        }))
+        .filter((r) => r.count > 0)
+    );
   }, [id, supabase]);
 
   useEffect(() => {
     loadWorkspace();
   }, [loadWorkspace]);
 
-  function handleMaterial(files: File[]) {
-    if (files[0]) setMaterialFile(files[0]);
+  async function handleMaterial(files: File[]) {
+    const file = files[0];
+    if (!file) return;
+    setCheckingFile(true);
+    setGenError(null);
+
+    let hash: string | null = null;
+    try {
+      hash = await hashFile(file);
+    } catch (err) {
+      console.error("hashing failed, treating as new", err);
+    }
+
+    let next: MaterialPlan = { kind: "new", file, hash };
+    if (hash) {
+      const sameHere = allMaterials.find((m) => m.content_hash === hash);
+      if (sameHere) {
+        next = { kind: "reuse", file, hash, target: sameHere };
+      } else {
+        const { data: elsewhere } = await supabase
+          .from("materials")
+          .select("id, chunks_from, workspaces(name)")
+          .eq("content_hash", hash)
+          .not("indexed_at", "is", null)
+          .neq("workspace_id", id)
+          .limit(1);
+        const src = elsewhere?.[0] as
+          | { id: string; chunks_from: string | null; workspaces: { name: string } | { name: string }[] | null }
+          | undefined;
+        if (src) {
+          const ws = Array.isArray(src.workspaces) ? src.workspaces[0] : src.workspaces;
+          next = {
+            kind: "link",
+            file,
+            hash,
+            sourceId: src.chunks_from ?? src.id,
+            fromWorkspace: ws?.name ?? "another workspace",
+          };
+        }
+      }
+    }
+    if (next.kind === "new") {
+      const sameName = allMaterials.find((m) => m.file_name === file.name);
+      if (sameName) next = { kind: "update", file, hash, target: sameName };
+    }
+
+    setPlan(next);
+    setCheckingFile(false);
   }
 
   async function handleQuestions(files: File[]) {
@@ -114,8 +210,13 @@ export default function WorkspaceClient() {
   const unreadableCount = questionImages.filter(
     (i) => i.status !== "pending" && !i.ocrText.trim()
   ).length;
+  // saved = fully indexed (or linked to an indexed copy); the rest are
+  // half-finished uploads we can still resume instead of duplicating
+  const memory = allMaterials.filter((m) => m.indexed_at || m.chunks_from);
+  const hasMaterial = plan !== null || memory.length > 0;
   const canGenerate =
-    materialFile !== null &&
+    hasMaterial &&
+    !checkingFile &&
     (questionImages.length > 0 || textQuestions.length > 0) &&
     !ocrInProgress;
   const blurryCount = questionImages.filter((i) => i.isBlurry).length;
@@ -134,20 +235,71 @@ export default function WorkspaceClient() {
     } = await supabase.auth.getUser();
     if (!user) return;
 
-    // 1. Upload material to storage
-    const materialPath = `${user.id}/${id}/${materialFile!.name}`;
-    await supabase.storage.from("materials").upload(materialPath, materialFile!, {
-      upsert: true,
-    });
-    const { data: materialRow } = await supabase
-      .from("materials")
-      .insert({
-        workspace_id: id,
-        file_name: materialFile!.name,
-        storage_path: materialPath,
-      })
-      .select()
-      .single();
+    // 1. Material: only upload/process what memory doesn't already have
+    const fail = (message: string) => {
+      setGenError(message);
+      setStarting(false);
+    };
+    let materialId: string | undefined;
+
+    if (plan?.kind === "reuse") {
+      materialId = plan.target.id; // already remembered: nothing to upload
+    } else if (plan?.kind === "link") {
+      // identical file indexed elsewhere: point at its chunks, no upload, no embedding
+      const { data: row, error } = await supabase
+        .from("materials")
+        .insert({
+          workspace_id: id,
+          file_name: plan.file.name,
+          content_hash: plan.hash,
+          chunks_from: plan.sourceId,
+          indexed_at: new Date().toISOString(),
+          storage_path: null,
+        })
+        .select()
+        .single();
+      if (error || !row) return fail("Couldn't link your saved material. Please try again.");
+      materialId = row.id;
+    } else if (plan) {
+      const materialPath = `${user.id}/${id}/${plan.file.name}`;
+      const { error: uploadError } = await supabase.storage
+        .from("materials")
+        .upload(materialPath, plan.file, { upsert: true });
+      if (uploadError) return fail(`Couldn't upload your material: ${uploadError.message}`);
+
+      if (plan.kind === "update") {
+        // same document, new content: keep its memory row, chunk-diff on process
+        const { error } = await supabase
+          .from("materials")
+          .update({
+            storage_path: materialPath,
+            content_hash: plan.hash,
+            indexed_at: null,
+            chunks_from: null,
+            file_deleted_at: null,
+            uploaded_at: new Date().toISOString(),
+          })
+          .eq("id", plan.target.id);
+        if (error) return fail("Couldn't update your saved material. Please try again.");
+        materialId = plan.target.id;
+      } else {
+        const { data: row, error } = await supabase
+          .from("materials")
+          .insert({
+            workspace_id: id,
+            file_name: plan.file.name,
+            storage_path: materialPath,
+            content_hash: plan.hash,
+          })
+          .select()
+          .single();
+        if (error || !row) return fail("Couldn't save your material. Please try again.");
+        materialId = row.id;
+      }
+    } else {
+      // nothing new picked: use what's already in memory
+      materialId = (memory.find((m) => !m.indexed_at && !m.chunks_from) ?? memory[0]).id;
+    }
 
     // 2. Create question set
     const { data: questionSet } = await supabase
@@ -193,7 +345,7 @@ export default function WorkspaceClient() {
     // resumable passes as the free-tier rate limit needs), then starts
     // generate-answers, and shows real progress while it does.
     router.push(
-      `/workspace/${id}/generating?set=${questionSet!.id}&material=${materialRow!.id}`
+      `/workspace/${id}/generating?set=${questionSet!.id}&material=${materialId}`
     );
   }
 
@@ -217,20 +369,96 @@ export default function WorkspaceClient() {
           <h1 className="text-2xl font-bold text-ink">{workspaceName}</h1>
         </div>
 
+        {pastSets.length > 0 && (
+          <section className="mb-8">
+            <h2 className="mb-2 flex items-center gap-2 font-semibold text-wine">
+              <History size={16} />
+              Previous answers
+            </h2>
+            <ul className="flex flex-col gap-2">
+              {pastSets.map((r) => (
+                <li key={r.id}>
+                  <button
+                    onClick={() => router.push(`/workspace/${id}/results?set=${r.id}`)}
+                    className="flex w-full items-center justify-between rounded-xl bg-white px-4 py-3 text-left shadow-sm transition hover:shadow-md"
+                  >
+                    <span className="text-sm font-medium text-ink">
+                      {new Date(r.created_at).toLocaleDateString(undefined, {
+                        month: "short",
+                        day: "numeric",
+                        hour: "numeric",
+                        minute: "2-digit",
+                      })}
+                    </span>
+                    <span className="text-sm text-muted">
+                      {r.count} answer{r.count !== 1 ? "s" : ""} · View
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </section>
+        )}
+
         <section className="mb-8">
           <h2 className="mb-1 flex items-center gap-2 font-semibold text-wine">
             Study Material
           </h2>
           <p className="mb-3 text-sm text-muted">
-            Upload your notes, textbook, or reference material.
+            {memory.length > 0 && !plan
+              ? "Your material is saved in memory, so there's no need to upload it again."
+              : "Upload your notes, textbook, or reference material."}
           </p>
 
-          {materialFile ? (
-            <FileChip
-              name={materialFile.name}
-              size={`${(materialFile.size / 1024 / 1024).toFixed(1)} MB`}
-              onRemove={() => setMaterialFile(null)}
-            />
+          {checkingFile ? (
+            <p className="rounded-xl bg-white px-4 py-3 text-sm text-muted shadow-sm">
+              Checking memory…
+            </p>
+          ) : plan ? (
+            <>
+              <FileChip
+                name={plan.file.name}
+                size={`${(plan.file.size / 1024 / 1024).toFixed(1)} MB`}
+                onRemove={() => setPlan(null)}
+              />
+              <p className="mt-2 flex items-start gap-2 text-xs text-muted">
+                <DatabaseZap size={14} className="mt-0.5 shrink-0 text-wine" />
+                {plan.kind === "reuse" &&
+                  "Already in memory. Nothing to upload or process."}
+                {plan.kind === "link" &&
+                  `Already in memory from "${plan.fromWorkspace}". Reusing it, nothing to process.`}
+                {plan.kind === "update" &&
+                  "Updated version of a saved file. Only new or changed sections will be processed."}
+                {plan.kind === "new" &&
+                  "New material. It's processed once, then remembered."}
+              </p>
+            </>
+          ) : memory.length > 0 && !showUpload ? (
+            <>
+              <ul className="flex flex-col gap-2">
+                {memory.map((m) => (
+                  <li
+                    key={m.id}
+                    className="flex items-center gap-3 rounded-xl bg-white px-4 py-3 shadow-sm"
+                  >
+                    <DatabaseZap size={16} className="shrink-0 text-wine" />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-medium text-ink">{m.file_name}</p>
+                      <p className="text-xs text-muted">
+                        Saved in memory
+                        {m.file_deleted_at ? " · original file removed to save storage" : ""}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+              <button
+                onClick={() => setShowUpload(true)}
+                className="mt-2 text-xs text-muted underline transition hover:text-wine"
+              >
+                Upload an updated or different file
+              </button>
+            </>
           ) : (
             <UploadZone kind="material" onFiles={handleMaterial} />
           )}
@@ -290,9 +518,14 @@ export default function WorkspaceClient() {
           <Sparkles size={18} />
           {starting ? "Starting…" : "Generate Answers"}
         </button>
+        {genError && (
+          <p role="alert" className="mt-3 text-center text-xs text-wine-dark">
+            {genError}
+          </p>
+        )}
         {!canGenerate && !starting && (
           <p className="mt-3 text-center text-xs text-muted">
-            {!materialFile
+            {!hasMaterial
               ? "Upload your study material to continue."
               : ocrInProgress
               ? "Reading your screenshots…"

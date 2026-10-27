@@ -40,7 +40,9 @@ export default function DashboardPage() {
     // workspaces -> question_sets -> questions -> answers
     const { data: ws, error: loadError } = await supabase
       .from("workspaces")
-      .select("*, question_sets(questions(answers(count)))")
+      .select(
+        "*, question_sets(id, status, created_at, questions(answers(count)))"
+      )
       .order("created_at", { ascending: false });
 
     if (loadError) {
@@ -55,20 +57,22 @@ export default function DashboardPage() {
       name: string;
       subject_tag: string | null;
       created_at: string;
-      question_sets?: { questions?: { answers?: { count: number }[] }[] }[];
+      question_sets?: {
+        id: string;
+        status: string;
+        created_at: string;
+        questions?: { answers?: { count: number }[] }[];
+      }[];
     };
 
     const mapped: Workspace[] = ((ws ?? []) as Row[]).map((row) => {
+      const setAnswers = (qs: NonNullable<Row["question_sets"]>[number]) =>
+        qs.questions?.reduce((sum, q) => sum + (q.answers?.[0]?.count ?? 0), 0) ?? 0;
       const answerCount =
-        row.question_sets?.reduce(
-          (sum, qs) =>
-            sum +
-            (qs.questions?.reduce(
-              (qSum, q) => qSum + (q.answers?.[0]?.count ?? 0),
-              0
-            ) ?? 0),
-          0
-        ) ?? 0;
+        row.question_sets?.reduce((sum, qs) => sum + setAnswers(qs), 0) ?? 0;
+      const latest = [...(row.question_sets ?? [])]
+        .filter((qs) => qs.status === "done" && setAnswers(qs) > 0)
+        .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
       return {
         id: row.id,
         user_id: row.user_id,
@@ -76,6 +80,7 @@ export default function DashboardPage() {
         subject_tag: row.subject_tag,
         created_at: row.created_at,
         answer_count: answerCount,
+        latest_set_id: latest?.id ?? null,
       };
     });
 

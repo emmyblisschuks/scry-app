@@ -8,6 +8,7 @@ import { createClient } from "jsr:@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
 import { chunkText } from "../_shared/chunk.ts";
 import { embedTexts } from "../_shared/gemini.ts";
+import { sha256Bytes, sha256Text } from "../_shared/hash.ts";
 
 // @ts-expect-error - npm specifier, resolved at deploy time by Supabase
 import pdfParse from "npm:pdf-parse@1.1.1";
@@ -45,6 +46,22 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: "Material not found" }, 404);
     }
 
+    // Memory hit: already indexed (or an identical file elsewhere is reused),
+    // so there is nothing to download or embed.
+    if (material.chunks_from || material.indexed_at) {
+      return jsonResponse({
+        success: true,
+        done: true,
+        processed: 0,
+        total: 0,
+        reused: true,
+        rateLimited: false,
+      });
+    }
+    if (!material.storage_path) {
+      return jsonResponse({ error: "Original file is gone and material is not indexed" }, 409);
+    }
+
     const { data: fileBlob, error: downloadError } = await supabase.storage
       .from("materials")
       .download(material.storage_path);
@@ -54,6 +71,15 @@ Deno.serve(async (req) => {
     }
 
     const buffer = new Uint8Array(await fileBlob.arrayBuffer());
+
+    // Server-side file fingerprint is the source of truth for dedupe.
+    const fileHash = await sha256Bytes(buffer);
+    if (material.content_hash !== fileHash) {
+      await supabase
+        .from("materials")
+        .update({ content_hash: fileHash })
+        .eq("id", materialId);
+    }
     const isPdf = material.file_name.toLowerCase().endsWith(".pdf");
 
     let rawText = "";
@@ -69,27 +95,50 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: "No extractable text found in material" }, 422);
     }
 
-    const chunks = chunkText(rawText);
+    // Chunk-level memory: hash every chunk, compare with what's already stored
+    // for this material, and embed ONLY chunks we haven't seen. Chunks that
+    // disappeared from the file are removed once the new ones are in, so an
+    // updated file refreshes memory instead of rebuilding it.
+    const allChunks = chunkText(rawText);
+    const hashed = await Promise.all(
+      allChunks.map(async (content, i) => ({
+        content,
+        hash: await sha256Text(content),
+        position: i + 1,
+      }))
+    );
+    const seen = new Set<string>();
+    const wanted = hashed.filter((c) => (seen.has(c.hash) ? false : seen.add(c.hash)));
+
+    const existing: { id: string; content_hash: string | null }[] = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await supabase
+        .from("material_chunks")
+        .select("id, content_hash")
+        .eq("material_id", materialId)
+        .range(from, from + 999);
+      if (error) throw new Error(`Chunk lookup failed: ${error.message}`);
+      existing.push(...(data ?? []));
+      if (!data || data.length < 1000) break;
+    }
+    const existingHashes = new Set(existing.map((e) => e.content_hash));
+    const todo = wanted.filter((c) => !existingHashes.has(c.hash));
+    const reused = wanted.length - todo.length;
 
     // Resumable + rate-limit aware. Gemini's free tier allows ~30k embedding
     // tokens/minute, so a big PDF can't be indexed in one burst. We embed in
     // small batches, pace to stay under the limit, stop before the Edge
     // Function wall-clock limit, and report progress. The client simply calls
-    // this again until done=true; chunks already stored are skipped.
-    const { count: existing } = await supabase
-      .from("material_chunks")
-      .select("id", { count: "exact", head: true })
-      .eq("material_id", materialId);
-
-    let index = existing ?? 0;
+    // this again until done=true; already-stored chunks are skipped.
+    let cursor = 0;
     const startedAt = Date.now();
     let windowStart = Date.now();
     let windowTokens = 0;
     let rateLimited = false;
 
-    while (index < chunks.length) {
-      const batch = chunks.slice(index, index + BATCH_SIZE);
-      const estTokens = Math.ceil(batch.join("").length / 3); // conservative
+    while (cursor < todo.length) {
+      const batch = todo.slice(cursor, cursor + BATCH_SIZE);
+      const estTokens = Math.ceil(batch.map((c) => c.content).join("").length / 3);
 
       if (windowTokens + estTokens > TOKENS_PER_MINUTE_BUDGET) {
         const waitMs = Math.max(0, 60_000 - (Date.now() - windowStart)) + 500;
@@ -102,7 +151,11 @@ Deno.serve(async (req) => {
 
       let embeddings: number[][];
       try {
-        embeddings = await embedTexts(geminiKey, batch, "RETRIEVAL_DOCUMENT");
+        embeddings = await embedTexts(
+          geminiKey,
+          batch.map((c) => c.content),
+          "RETRIEVAL_DOCUMENT"
+        );
       } catch (e) {
         if (String(e).includes(" 429 ")) {
           rateLimited = true;
@@ -111,29 +164,51 @@ Deno.serve(async (req) => {
         throw e;
       }
 
-      const { error: insertError } = await supabase
-        .from("material_chunks")
-        .insert(
-          batch.map((content, i) => ({
-            material_id: materialId,
-            content,
-            embedding: embeddings[i],
-            page_ref: `chunk ${index + i + 1}`,
-          }))
-        );
+      const { error: insertError } = await supabase.from("material_chunks").insert(
+        batch.map((c, i) => ({
+          material_id: materialId,
+          content: c.content,
+          content_hash: c.hash,
+          embedding: embeddings[i],
+          page_ref: `chunk ${c.position}`,
+        }))
+      );
       if (insertError) {
         throw new Error(`Chunk insert failed: ${insertError.message}`);
       }
 
       windowTokens += estTokens;
-      index += batch.length;
+      cursor += batch.length;
+    }
+
+    const done = cursor >= todo.length;
+    let removed = 0;
+
+    if (done) {
+      // New content is fully in; now drop chunks that are no longer in the file.
+      const keep = new Set(wanted.map((c) => c.hash));
+      const staleIds = existing
+        .filter((e) => !e.content_hash || !keep.has(e.content_hash))
+        .map((e) => e.id);
+      for (let i = 0; i < staleIds.length; i += 100) {
+        await supabase.from("material_chunks").delete().in("id", staleIds.slice(i, i + 100));
+      }
+      removed = staleIds.length;
+
+      await supabase
+        .from("materials")
+        .update({ indexed_at: new Date().toISOString() })
+        .eq("id", materialId);
     }
 
     return jsonResponse({
       success: true,
-      done: index >= chunks.length,
-      processed: index,
-      total: chunks.length,
+      done,
+      processed: reused + cursor,
+      total: wanted.length,
+      reused,
+      embedded: cursor,
+      removed,
       rateLimited,
     });
   } catch (err) {
