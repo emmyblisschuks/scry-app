@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, AlertTriangle, Sparkles, DatabaseZap, History } from "lucide-react";
+import { ArrowLeft, AlertTriangle, Sparkles, DatabaseZap, History, GraduationCap } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { detectBlur } from "@/lib/blurDetection";
 import { extractText } from "@/lib/ocr";
@@ -442,13 +442,20 @@ export default function WorkspaceClient() {
                     className="flex items-center gap-3 rounded-xl bg-white px-4 py-3 shadow-sm"
                   >
                     <DatabaseZap size={16} className="shrink-0 text-wine" />
-                    <div className="min-w-0">
+                    <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-medium text-ink">{m.file_name}</p>
                       <p className="text-xs text-muted">
                         Saved in memory
                         {m.file_deleted_at ? " · original file removed to save storage" : ""}
                       </p>
                     </div>
+                    <button
+                      onClick={() => router.push(`/workspace/${id}/learn?material=${m.id}`)}
+                      className="flex shrink-0 items-center gap-1 rounded-full border border-wine px-3 py-1.5 text-xs font-medium text-wine transition active:scale-95"
+                    >
+                      <GraduationCap size={14} />
+                      Learn
+                    </button>
                   </li>
                 ))}
               </ul>

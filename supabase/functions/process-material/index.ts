@@ -49,6 +49,32 @@ Deno.serve(async (req) => {
     // Memory hit: already indexed (or an identical file elsewhere is reused),
     // so there is nothing to download or embed.
     if (material.chunks_from || material.indexed_at) {
+      // Older materials indexed before Learn Mode existed won't have
+      // extracted_text yet. Backfill it cheaply (local parse only, no
+      // Gemini call) so Learn Mode can use them without re-embedding.
+      if (!material.extracted_text && material.storage_path) {
+        try {
+          const { data: fileBlob } = await supabase.storage
+            .from("materials")
+            .download(material.storage_path);
+          if (fileBlob) {
+            const buffer = new Uint8Array(await fileBlob.arrayBuffer());
+            const isPdf = material.file_name.toLowerCase().endsWith(".pdf");
+            const text = isPdf
+              ? (await pdfParse(buffer)).text
+              : (await mammoth.extractRawText({ buffer })).value;
+            if (text.trim()) {
+              await supabase
+                .from("materials")
+                .update({ extracted_text: text.slice(0, 500_000) })
+                .eq("id", materialId);
+            }
+          }
+        } catch (e) {
+          console.error("Backfilling extracted_text failed:", e);
+          // non-fatal: Q&A still works, Learn Mode just can't use it yet
+        }
+      }
       return jsonResponse({
         success: true,
         done: true,
@@ -94,6 +120,13 @@ Deno.serve(async (req) => {
     if (!rawText.trim()) {
       return jsonResponse({ error: "No extractable text found in material" }, 422);
     }
+
+    // Save the raw text (capped) so Learn Mode can segment it into units
+    // without re-downloading and re-parsing the file later.
+    await supabase
+      .from("materials")
+      .update({ extracted_text: rawText.slice(0, 500_000) })
+      .eq("id", materialId);
 
     // Chunk-level memory: hash every chunk, compare with what's already stored
     // for this material, and embed ONLY chunks we haven't seen. Chunks that

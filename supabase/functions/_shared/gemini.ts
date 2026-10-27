@@ -152,6 +152,52 @@ Rules:
   return { answer, confidence, sourceSnippet };
 }
 
+// Learn Mode: teaches one unit of a material in plain language with
+// real-world examples, like explaining it to a secondary school student.
+export async function teachUnit(
+  apiKey: string,
+  unitTitle: string,
+  unitText: string
+): Promise<string> {
+  const systemInstruction = `You are a patient, friendly teacher explaining study material to a secondary school student. Use simple, everyday words — no big grammar, no unexplained jargon. Use real-world examples and analogies the student can relate to.
+
+Study the material given below and teach it like this:
+- Start with a short, simple summary of what this unit is about (2-3 sentences).
+- Go through each heading and sub-heading in the material, IN ORDER, and teach each one.
+- For each heading, explain it in plain simple language, then give at least one real-world example or everyday analogy that makes it click.
+- Do not skip any heading or sub-heading that is in the material.
+- Only teach what is actually in the material — don't add outside facts, just make what's there easier to understand.
+- End with a short "Quick Recap" as a bullet list of the key points in this unit.
+
+Keep a warm, encouraging tone, like a good teacher talking directly to the student.`;
+
+  const res = await geminiPost(
+    `${BASE_URL}/models/${GENERATE_MODEL}:generateContent?key=${apiKey}`,
+    {
+      systemInstruction: { parts: [{ text: systemInstruction }] },
+      contents: [
+        {
+          role: "user",
+          parts: [
+            { text: `Unit title: ${unitTitle}\n\nMaterial for this unit:\n${unitText}` },
+          ],
+        },
+      ],
+      generationConfig: { temperature: 0.4 },
+    },
+    "Gemini teach unit"
+  );
+
+  const json = await res.json();
+  const parts: { text?: string; thought?: boolean }[] =
+    json.candidates?.[0]?.content?.parts ?? [];
+  return parts
+    .filter((p) => !p.thought)
+    .map((p) => p.text ?? "")
+    .join("")
+    .trim();
+}
+
 export function cosineSimilarity(a: number[], b: number[]): number {
   let dot = 0,
     normA = 0,
