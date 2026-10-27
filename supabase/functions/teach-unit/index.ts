@@ -13,6 +13,11 @@ import { corsHeaders } from "../_shared/cors.ts";
 import { teachUnit } from "../_shared/gemini.ts";
 import { splitIntoUnits } from "../_shared/units.ts";
 
+// @ts-expect-error - npm specifier, resolved at deploy time by Supabase
+import pdfParse from "npm:pdf-parse@1.1.1";
+// @ts-expect-error - npm specifier, resolved at deploy time by Supabase
+import mammoth from "npm:mammoth@1.8.0";
+
 // Keeps each lesson call comfortably inside the free-tier token budget.
 const MAX_UNIT_CHARS = 16_000;
 
@@ -43,7 +48,7 @@ Deno.serve(async (req) => {
 
     const { data: material, error: materialError } = await supabase
       .from("materials")
-      .select("id, workspace_id, file_name, extracted_text")
+      .select("id, workspace_id, file_name, extracted_text, storage_path, chunks_from")
       .eq("id", materialId)
       .single();
     if (materialError || !material) return jsonResponse({ error: "Material not found" }, 404);
@@ -57,11 +62,64 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: "Not authorized" }, 403);
     }
 
-    if (!material.extracted_text) {
+    let extractedText = material.extracted_text as string | null;
+
+    // Material indexed before Learn Mode existed (or linked to another
+    // workspace's copy) won't have extracted_text yet. Backfill it here,
+    // on demand, with a local parse — no Gemini call needed.
+    if (!extractedText) {
+      let storagePath = material.storage_path as string | null;
+      let sourceMaterialId = materialId;
+
+      if (!storagePath && material.chunks_from) {
+        const { data: source } = await supabase
+          .from("materials")
+          .select("id, storage_path, extracted_text")
+          .eq("id", material.chunks_from)
+          .single();
+        if (source?.extracted_text) extractedText = source.extracted_text;
+        else if (source?.storage_path) {
+          storagePath = source.storage_path;
+          sourceMaterialId = source.id;
+        }
+      }
+
+      if (!extractedText && storagePath) {
+        const { data: fileBlob } = await supabase.storage
+          .from("materials")
+          .download(storagePath);
+        if (fileBlob) {
+          const buffer = new Uint8Array(await fileBlob.arrayBuffer());
+          const isPdf = material.file_name.toLowerCase().endsWith(".pdf");
+          try {
+            const text = isPdf
+              ? (await pdfParse(buffer)).text
+              : (await mammoth.extractRawText({ buffer })).value;
+            if (text.trim()) {
+              extractedText = text.slice(0, 500_000);
+              await supabase
+                .from("materials")
+                .update({ extracted_text: extractedText })
+                .eq("id", sourceMaterialId);
+              if (sourceMaterialId !== materialId) {
+                await supabase
+                  .from("materials")
+                  .update({ extracted_text: extractedText })
+                  .eq("id", materialId);
+              }
+            }
+          } catch (e) {
+            console.error("Learn Mode backfill parse failed:", e);
+          }
+        }
+      }
+    }
+
+    if (!extractedText) {
       return jsonResponse(
         {
           error:
-            "This material isn't ready for Learn Mode yet. Open it in the workspace once (upload or Generate Answers) so it can be processed, then try Learn again.",
+            "Couldn't read this material for Learn Mode (the original file may have been removed to save storage). Re-upload it and try again.",
         },
         409
       );
@@ -75,7 +133,7 @@ Deno.serve(async (req) => {
       .order("unit_number", { ascending: true });
 
     if (!units || units.length === 0) {
-      const raw = splitIntoUnits(material.extracted_text);
+      const raw = splitIntoUnits(extractedText);
       const rows = raw.map((u, i) => ({
         material_id: materialId,
         workspace_id: material.workspace_id,
