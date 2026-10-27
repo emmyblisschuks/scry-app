@@ -5,6 +5,8 @@ import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, GraduationCap, Loader2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import { readFunctionError } from "@/lib/functionError";
+import { hashFile } from "@/lib/fileHash";
+import UploadZone, { FileChip } from "@/components/UploadZone";
 import { Material } from "@/lib/types";
 
 type Lesson = {
@@ -28,6 +30,10 @@ export default function LearnClient() {
   const [lesson, setLesson] = useState<Lesson | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadStage, setUploadStage] = useState<string | null>(null);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   useEffect(() => {
     if (materialId) return;
@@ -63,6 +69,127 @@ export default function LearnClient() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [materialId]);
 
+  // Upload a material straight into Learn Mode — no need to run a Q&A set
+  // first. Same memory/dedupe rules as the main workspace upload: an
+  // identical file (here or in another of this student's workspaces) is
+  // reused instead of re-processed.
+  async function handleUploadForLearn(files: File[]) {
+    const file = files[0];
+    if (!file) return;
+    setUploadFile(file);
+    setUploadError(null);
+    setUploadStage("Checking memory…");
+
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    if (!user) {
+      setUploadError("You need to be signed in.");
+      setUploadStage(null);
+      return;
+    }
+
+    let hash: string | null = null;
+    try {
+      hash = await hashFile(file);
+    } catch (err) {
+      console.error("hashing failed, treating as new", err);
+    }
+
+    try {
+      let newMaterialId: string;
+
+      const sameHere = hash
+        ? materials.find((m) => m.content_hash === hash)
+        : undefined;
+
+      if (sameHere) {
+        newMaterialId = sameHere.id;
+      } else {
+        const elsewhere = hash
+          ? (
+              await supabase
+                .from("materials")
+                .select("id, chunks_from")
+                .eq("content_hash", hash)
+                .not("indexed_at", "is", null)
+                .neq("workspace_id", id)
+                .limit(1)
+            ).data?.[0]
+          : undefined;
+
+        if (elsewhere) {
+          setUploadStage("Found this in your memory already…");
+          const { data: row, error: insertError } = await supabase
+            .from("materials")
+            .insert({
+              workspace_id: id,
+              file_name: file.name,
+              content_hash: hash,
+              chunks_from: elsewhere.chunks_from ?? elsewhere.id,
+              indexed_at: new Date().toISOString(),
+              storage_path: null,
+            })
+            .select()
+            .single();
+          if (insertError || !row) throw new Error("Couldn't save this material.");
+          newMaterialId = row.id;
+        } else {
+          setUploadStage("Uploading…");
+          const materialPath = `${user.id}/${id}/${file.name}`;
+          const { error: uploadErr } = await supabase.storage
+            .from("materials")
+            .upload(materialPath, file, { upsert: true });
+          if (uploadErr) throw new Error(`Couldn't upload: ${uploadErr.message}`);
+
+          const { data: row, error: insertError } = await supabase
+            .from("materials")
+            .insert({
+              workspace_id: id,
+              file_name: file.name,
+              storage_path: materialPath,
+              content_hash: hash,
+            })
+            .select()
+            .single();
+          if (insertError || !row) throw new Error("Couldn't save this material.");
+          newMaterialId = row.id;
+
+          // Resumable, rate-limit aware — same loop the Q&A flow uses.
+          setUploadStage("Reading and processing material…");
+          let done = false;
+          let errors = 0;
+          for (let pass = 0; !done && pass < 60; pass++) {
+            const { data, error: fnError } = await supabase.functions.invoke(
+              "process-material",
+              { body: { materialId: newMaterialId } }
+            );
+            if (fnError) {
+              if (++errors >= 3) throw new Error(await readFunctionError(fnError));
+              await new Promise((r) => setTimeout(r, 5000));
+              continue;
+            }
+            errors = 0;
+            done = data?.done === true;
+            if (!done && data?.rateLimited) {
+              setUploadStage("Pausing briefly for rate limits…");
+              await new Promise((r) => setTimeout(r, 20000));
+              setUploadStage("Reading and processing material…");
+            }
+          }
+          if (!done) throw new Error("Processing didn't finish — please try again.");
+        }
+      }
+
+      setUploadStage(null);
+      setMaterialId(newMaterialId);
+    } catch (err) {
+      console.error(err);
+      setUploadError(err instanceof Error ? err.message : "Something went wrong.");
+      setUploadStage(null);
+    }
+  }
+
   return (
     <main className="min-h-screen bg-cream px-6 py-8 md:px-12">
       <div className="mx-auto max-w-2xl">
@@ -89,13 +216,9 @@ export default function LearnClient() {
               Pick a material and Scry will teach it to you unit by unit, in
               simple language with real-world examples.
             </p>
-            {materials.length === 0 ? (
-              <p className="rounded-xl bg-white px-4 py-3 text-sm text-muted shadow-sm">
-                No processed material yet. Upload one and generate answers
-                once first — Learn Mode reuses that same memory.
-              </p>
-            ) : (
-              <ul className="flex flex-col gap-2">
+
+            {materials.length > 0 && (
+              <ul className="mb-4 flex flex-col gap-2">
                 {materials.map((m) => (
                   <li key={m.id}>
                     <button
@@ -107,6 +230,38 @@ export default function LearnClient() {
                   </li>
                 ))}
               </ul>
+            )}
+
+            {uploadStage ? (
+              <div className="flex flex-col items-center gap-3 rounded-2xl bg-white px-6 py-10 text-center shadow-sm">
+                <Loader2 size={24} className="animate-spin text-wine" />
+                <p className="text-sm text-muted">{uploadStage}</p>
+              </div>
+            ) : uploadFile && uploadError ? (
+              <>
+                <FileChip
+                  name={uploadFile.name}
+                  size={`${(uploadFile.size / 1024 / 1024).toFixed(1)} MB`}
+                  onRemove={() => {
+                    setUploadFile(null);
+                    setUploadError(null);
+                  }}
+                />
+                <p className="mt-2 text-xs text-wine-dark">{uploadError}</p>
+                <button
+                  onClick={() => handleUploadForLearn([uploadFile])}
+                  className="mt-2 text-xs font-medium text-wine underline"
+                >
+                  Try again
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="mb-2 text-xs font-medium uppercase tracking-wide text-muted">
+                  {materials.length > 0 ? "Or upload a new one" : "Upload material to learn"}
+                </p>
+                <UploadZone kind="material" onFiles={handleUploadForLearn} />
+              </>
             )}
           </section>
         ) : loading && !lesson ? (
