@@ -125,12 +125,27 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Segment into units once, then reuse forever.
+    // Segment into modules/units once, then reuse forever. Units saved before
+    // modules existed (module_number null) are re-segmented once; their
+    // cached lessons are dropped so they're regenerated in the new format.
+    type UnitMeta = {
+      unit_number: number;
+      title: string;
+      module_number: number | null;
+      module_title: string | null;
+      unit_in_module: number | null;
+    };
+    const unitCols = "unit_number, title, module_number, module_title, unit_in_module";
     let { data: units } = await supabase
       .from("material_units")
-      .select("unit_number, title")
+      .select(unitCols)
       .eq("material_id", materialId)
       .order("unit_number", { ascending: true });
+
+    if (units && units.length > 0 && units[0].module_number == null) {
+      await supabase.from("material_units").delete().eq("material_id", materialId);
+      units = [];
+    }
 
     if (!units || units.length === 0) {
       const raw = splitIntoUnits(extractedText);
@@ -140,11 +155,21 @@ Deno.serve(async (req) => {
         unit_number: i + 1,
         title: u.title,
         source_text: u.content.slice(0, MAX_UNIT_CHARS),
+        module_number: u.moduleNumber,
+        module_title: u.moduleTitle,
+        unit_in_module: u.unitInModule,
       }));
       const { error: insertError } = await supabase.from("material_units").insert(rows);
       if (insertError) throw new Error(`Could not save units: ${insertError.message}`);
-      units = rows.map((r) => ({ unit_number: r.unit_number, title: r.title }));
+      units = rows.map((r) => ({
+        unit_number: r.unit_number,
+        title: r.title,
+        module_number: r.module_number,
+        module_title: r.module_title,
+        unit_in_module: r.unit_in_module,
+      }));
     }
+    const allUnits = units as UnitMeta[];
 
     const totalUnits = units.length;
 
@@ -189,6 +214,12 @@ Deno.serve(async (req) => {
       { onConflict: "user_id,material_id" }
     );
 
+    const current = allUnits.find((u) => u.unit_number === targetUnit)!;
+    const next = allUnits.find((u) => u.unit_number === targetUnit + 1);
+    const inModule = allUnits.filter((u) => u.module_number === current.module_number);
+    const moduleNumbers = [...new Set(allUnits.map((u) => u.module_number))];
+    const isLastInModule = !next || next.module_number !== current.module_number;
+
     return jsonResponse({
       unitNumber: targetUnit,
       title: unitRow.title,
@@ -196,6 +227,13 @@ Deno.serve(async (req) => {
       totalUnits,
       hasNext: targetUnit < totalUnits,
       hasPrev: targetUnit > 1,
+      moduleNumber: current.module_number,
+      moduleTitle: current.module_title,
+      unitInModule: current.unit_in_module,
+      unitsInModule: inModule.length,
+      totalModules: moduleNumbers.length,
+      isLastInModule,
+      nextModuleTitle: isLastInModule && next ? next.module_title : null,
     });
   } catch (err) {
     console.error("teach-unit error:", err);

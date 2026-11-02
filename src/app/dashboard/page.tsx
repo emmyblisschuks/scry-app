@@ -2,24 +2,38 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Plus, Sparkles } from "lucide-react";
+import { ArrowRight, GraduationCap, MessageSquareText, Plus } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-import { Workspace } from "@/lib/types";
-import WorkspaceCard from "@/components/WorkspaceCard";
-import CreateWorkspaceModal from "@/components/CreateWorkspaceModal";
-import DeleteConfirmModal from "@/components/DeleteConfirmModal";
 import Logo from "@/components/Logo";
 import ProfileMenu, { ProfileUser } from "@/components/ProfileMenu";
+import { greetingFor } from "@/lib/greeting";
+import ChooseModeModal from "@/components/ChooseModeModal";
+import {
+  LearnCourse,
+  loadLearnCourses,
+  learnHref,
+  whereYouStopped,
+} from "@/lib/learnCourses";
+
+type AnswerSpace = { id: string; name: string; answers: number };
 
 export default function DashboardPage() {
   const router = useRouter();
   const [supabase] = useState(() => createClient());
-  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
-  const [loading, setLoading] = useState(true);
   const [profile, setProfile] = useState<ProfileUser | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [showCreate, setShowCreate] = useState(false);
-  const [pendingDelete, setPendingDelete] = useState<Workspace | null>(null);
+  const [courses, setCourses] = useState<LearnCourse[]>([]);
+  const [spaces, setSpaces] = useState<AnswerSpace[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showChoose, setShowChoose] = useState(false);
+  // Set after mount so it uses the browser's clock (and avoids a
+  // server/client mismatch); refreshed every minute.
+  const [greeting, setGreeting] = useState("Welcome");
+  useEffect(() => {
+    const tick = () => setGreeting(greetingFor());
+    tick();
+    const id = setInterval(tick, 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const load = useCallback(async () => {
     const {
@@ -36,56 +50,33 @@ export default function DashboardPage() {
       });
     }
 
-    // answers hang off questions, not question_sets, so the embed has to go
-    // workspaces -> question_sets -> questions -> answers
-    const { data: ws, error: loadError } = await supabase
-      .from("workspaces")
-      .select(
-        "*, question_sets(id, status, created_at, questions(answers(count)))"
-      )
-      .order("created_at", { ascending: false });
-
-    if (loadError) {
-      setError(`Couldn't load your workspaces: ${loadError.message}`);
-      setLoading(false);
-      return;
-    }
+    const [learn, ws] = await Promise.all([
+      loadLearnCourses(supabase),
+      supabase
+        .from("workspaces")
+        .select("id, name, question_sets(questions(answers(count)))")
+        .eq("kind", "answers")
+        .order("created_at", { ascending: false }),
+    ]);
 
     type Row = {
       id: string;
-      user_id: string;
       name: string;
-      subject_tag: string | null;
-      created_at: string;
-      question_sets?: {
-        id: string;
-        status: string;
-        created_at: string;
-        questions?: { answers?: { count: number }[] }[];
-      }[];
+      question_sets?: { questions?: { answers?: { count: number }[] }[] }[];
     };
-
-    const mapped: Workspace[] = ((ws ?? []) as Row[]).map((row) => {
-      const setAnswers = (qs: NonNullable<Row["question_sets"]>[number]) =>
-        qs.questions?.reduce((sum, q) => sum + (q.answers?.[0]?.count ?? 0), 0) ?? 0;
-      const answerCount =
-        row.question_sets?.reduce((sum, qs) => sum + setAnswers(qs), 0) ?? 0;
-      const latest = [...(row.question_sets ?? [])]
-        .filter((qs) => qs.status === "done" && setAnswers(qs) > 0)
-        .sort((a, b) => b.created_at.localeCompare(a.created_at))[0];
-      return {
-        id: row.id,
-        user_id: row.user_id,
-        name: row.name,
-        subject_tag: row.subject_tag,
-        created_at: row.created_at,
-        answer_count: answerCount,
-        latest_set_id: latest?.id ?? null,
-      };
-    });
-
-    setError(null);
-    setWorkspaces(mapped);
+    setSpaces(
+      ((ws.data ?? []) as Row[]).map((r) => ({
+        id: r.id,
+        name: r.name,
+        answers:
+          r.question_sets?.reduce(
+            (n, qs) =>
+              n + (qs.questions?.reduce((m, q) => m + (q.answers?.[0]?.count ?? 0), 0) ?? 0),
+            0
+          ) ?? 0,
+      }))
+    );
+    setCourses(learn);
     setLoading(false);
   }, [supabase]);
 
@@ -93,43 +84,14 @@ export default function DashboardPage() {
     load();
   }, [load]);
 
-  async function createWorkspace(name: string, subjectTag: string) {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    if (!user) {
-      throw new Error("Your session expired. Please sign in again.");
-    }
-
-    const { error: insertError } = await supabase.from("workspaces").insert({
-      user_id: user.id,
-      name,
-      subject_tag: subjectTag,
-    });
-    if (insertError) throw new Error(insertError.message);
-
-    setShowCreate(false);
-    await load();
-  }
-
-  async function deleteWorkspace() {
-    if (!pendingDelete) return;
-    const { error: deleteError } = await supabase
-      .from("workspaces")
-      .delete()
-      .eq("id", pendingDelete.id);
-    if (deleteError) {
-      setError(`Couldn't delete workspace: ${deleteError.message}`);
-    }
-    setPendingDelete(null);
-    await load();
-  }
-
   async function signOut() {
     await supabase.auth.signOut();
     router.push("/");
     router.refresh();
   }
+
+  const resume = courses.find((c) => c.currentUnit > 0);
+  const totalAnswers = spaces.reduce((n, s) => n + s.answers, 0);
 
   return (
     <main className="min-h-screen bg-cream px-6 py-8 md:px-12">
@@ -137,89 +99,165 @@ export default function DashboardPage() {
         <header className="mb-8 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <Logo size={32} />
-            <span className="font-serif text-xl font-bold text-wine">
-              Scry
-            </span>
+            <span className="font-serif text-xl font-bold text-wine">Scry</span>
           </div>
           {profile && <ProfileMenu user={profile} onSignOut={signOut} />}
         </header>
 
-        <h1 className="mb-6 text-2xl font-bold text-ink">My Workspaces</h1>
-
-        {error && (
-          <div
-            role="alert"
-            className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-wine/20 bg-wine/5 px-4 py-3 text-sm text-wine-dark"
-          >
-            <span>{error}</span>
-            <button
-              onClick={() => setError(null)}
-              className="font-medium underline"
-            >
-              Dismiss
-            </button>
-          </div>
-        )}
+        <h1 className="mb-1 text-2xl font-bold text-ink">
+          {profile?.name ? `${greeting}, ${profile.name.trim().split(/\s+/)[0]}` : greeting}
+        </h1>
+        <p className="mb-6 text-sm text-muted">What are you doing today?</p>
 
         {loading ? (
           <p className="text-sm text-muted">Loading…</p>
-        ) : workspaces.length === 0 ? (
-          <EmptyState onCreate={() => setShowCreate(true)} />
         ) : (
-          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {workspaces.map((w) => (
-              <WorkspaceCard
-                key={w.id}
-                workspace={w}
-                onDelete={() => setPendingDelete(w)}
-              />
-            ))}
-          </div>
+          <>
+            {resume ? (
+              <button
+                onClick={() => router.push(learnHref(resume))}
+                className="mb-6 w-full rounded-2xl bg-wine p-5 text-left text-cream shadow-md transition active:scale-[0.99]"
+              >
+                <span className="block text-xs font-medium uppercase tracking-wide opacity-80">
+                  Continue learning
+                </span>
+                <span className="mt-1 flex items-center justify-between gap-4">
+                  <span className="min-w-0">
+                    <span className="block truncate text-lg font-semibold">{resume.name}</span>
+                    <span className="text-sm opacity-80">{whereYouStopped(resume)}</span>
+                  </span>
+                  <ArrowRight size={20} className="shrink-0" />
+                </span>
+                <ProgressBar percent={resume.percent} light />
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowChoose(true)}
+                className="mb-6 flex w-full items-center justify-between gap-4 rounded-2xl border border-dashed border-wine/30 bg-white p-5 text-left transition active:scale-[0.99]"
+              >
+                <span>
+                  <span className="block font-semibold text-ink">Start something new</span>
+                  <span className="text-sm text-muted">
+                    Learn a course or get answers to questions.
+                  </span>
+                </span>
+                <ArrowRight size={20} className="shrink-0 text-wine" />
+              </button>
+            )}
+
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+              {/* Learn lane */}
+              <Lane
+                icon={<GraduationCap size={18} />}
+                title="Learn"
+                subtitle={`${courses.length} ${courses.length === 1 ? "course" : "courses"}`}
+                onOpen={() => router.push("/learn")}
+                emptyText="No courses yet. Upload course material to start learning."
+                empty={courses.length === 0}
+              >
+                {courses.slice(0, 3).map((c) => (
+                  <button
+                    key={c.materialId}
+                    onClick={() => router.push(learnHref(c))}
+                    className="w-full rounded-lg bg-cream px-3 py-2.5 text-left transition hover:bg-cream-dark"
+                  >
+                    <span className="block truncate text-sm font-medium text-ink">{c.name}</span>
+                    <span className="text-xs text-muted">{whereYouStopped(c)}</span>
+                    <ProgressBar percent={c.percent} />
+                  </button>
+                ))}
+              </Lane>
+
+              {/* Answers lane */}
+              <Lane
+                icon={<MessageSquareText size={18} />}
+                title="Answers"
+                subtitle={`${spaces.length} ${spaces.length === 1 ? "workspace" : "workspaces"} · ${totalAnswers} answers`}
+                onOpen={() => router.push("/answers")}
+                emptyText="No workspaces yet. Create one to get answers from your notes."
+                empty={spaces.length === 0}
+              >
+                {spaces.slice(0, 3).map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => router.push(`/workspace/${s.id}`)}
+                    className="w-full rounded-lg bg-cream px-3 py-2.5 text-left transition hover:bg-cream-dark"
+                  >
+                    <span className="block truncate text-sm font-medium text-ink">{s.name}</span>
+                    <span className="text-xs text-muted">{s.answers} answers</span>
+                  </button>
+                ))}
+              </Lane>
+            </div>
+          </>
         )}
 
         <button
-          onClick={() => setShowCreate(true)}
-          aria-label="New workspace"
+          onClick={() => setShowChoose(true)}
+          aria-label="Start something new"
           className="fixed bottom-8 right-8 flex h-14 w-14 items-center justify-center rounded-full bg-wine text-cream shadow-lg transition active:scale-90"
         >
           <Plus size={24} />
         </button>
       </div>
 
-      {showCreate && (
-        <CreateWorkspaceModal
-          onClose={() => setShowCreate(false)}
-          onCreate={createWorkspace}
-        />
-      )}
-
-      {pendingDelete && (
-        <DeleteConfirmModal
-          itemName={pendingDelete.name}
-          onClose={() => setPendingDelete(null)}
-          onConfirm={deleteWorkspace}
+      {showChoose && (
+        <ChooseModeModal
+          onClose={() => setShowChoose(false)}
+          onLearn={() => router.push("/learn")}
+          onAnswers={() => router.push("/answers")}
         />
       )}
     </main>
   );
 }
 
-function EmptyState({ onCreate }: { onCreate: () => void }) {
+function Lane({
+  icon,
+  title,
+  subtitle,
+  onOpen,
+  empty,
+  emptyText,
+  children,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  subtitle: string;
+  onOpen: () => void;
+  empty: boolean;
+  emptyText: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="flex flex-col items-center gap-4 rounded-2xl border border-dashed border-wine/20 py-20 text-center">
-      <Sparkles className="text-wine" size={32} />
-      <div>
-        <p className="font-medium text-ink">Create your first workspace</p>
-        <p className="text-sm text-muted">
-          Add a subject and start building your knowledge base.
-        </p>
-      </div>
-      <button
-        onClick={onCreate}
-        className="rounded-full bg-wine px-6 py-2.5 text-sm font-medium text-cream"
-      >
-        Create workspace
+    <section className="rounded-2xl bg-white p-5 shadow-sm">
+      <button onClick={onOpen} className="mb-3 flex w-full items-center justify-between text-left">
+        <span>
+          <span className="flex items-center gap-2 text-lg font-bold text-ink">
+            <span className="text-wine">{icon}</span> {title}
+          </span>
+          <span className="text-xs text-muted">{subtitle}</span>
+        </span>
+        <span className="flex items-center gap-1 text-xs font-medium text-wine">
+          Open <ArrowRight size={14} />
+        </span>
       </button>
-    </div>
+      {empty ? <p className="text-sm text-muted">{emptyText}</p> : <div className="flex flex-col gap-2">{children}</div>}
+    </section>
+  );
+}
+
+function ProgressBar({ percent, light }: { percent: number; light?: boolean }) {
+  return (
+    <span
+      className={`mt-2 block h-1.5 w-full overflow-hidden rounded-full ${
+        light ? "bg-cream/25" : "bg-wine/10"
+      }`}
+    >
+      <span
+        className={`block h-full rounded-full ${light ? "bg-cream" : "bg-wine"}`}
+        style={{ width: `${Math.max(percent, 3)}%` }}
+      />
+    </span>
   );
 }

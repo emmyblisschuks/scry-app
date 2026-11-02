@@ -3,6 +3,7 @@ export type Workspace = {
   user_id: string;
   name: string;
   subject_tag: string | null;
+  kind?: "answers" | "learn";
   created_at: string;
   answer_count?: number;
   // newest finished question set that has answers; the card opens it directly

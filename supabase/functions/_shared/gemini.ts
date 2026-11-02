@@ -1,3 +1,4 @@
+import { LESSON_SYSTEM_PROMPT } from "./lesson-prompt.ts";
 // Deno-native Gemini REST client, used by Edge Functions only.
 // Mirrors src/lib/gemini/client.ts but kept separate since Edge Functions
 // don't share a bundler with the Next.js app.
@@ -159,17 +160,7 @@ export async function teachUnit(
   unitTitle: string,
   unitText: string
 ): Promise<string> {
-  const systemInstruction = `You are a patient, friendly teacher explaining study material to a secondary school student. Use simple, everyday words — no big grammar, no unexplained jargon. Use real-world examples and analogies the student can relate to.
-
-Study the material given below and teach it like this:
-- Start with a short, simple summary of what this unit is about (2-3 sentences).
-- Go through each heading and sub-heading in the material, IN ORDER, and teach each one.
-- For each heading, explain it in plain simple language, then give at least one real-world example or everyday analogy that makes it click.
-- Do not skip any heading or sub-heading that is in the material.
-- Only teach what is actually in the material — don't add outside facts, just make what's there easier to understand.
-- End with a short "Quick Recap" as a bullet list of the key points in this unit.
-
-Keep a warm, encouraging tone, like a good teacher talking directly to the student.`;
+  const systemInstruction = LESSON_SYSTEM_PROMPT;
 
   const res = await geminiPost(
     `${BASE_URL}/models/${GENERATE_MODEL}:generateContent?key=${apiKey}`,
