@@ -94,3 +94,91 @@ function fallbackSplit(text: string, wordsPerUnit = 2200): RawUnit[] {
     ? units
     : [{ title: "Full material", content: text, moduleNumber: 1, moduleTitle: "Course", unitInModule: 1 }];
 }
+
+// ---------------------------------------------------------------------------
+// Long units are taught in parts instead of being cut off. Parts are packed
+// from whole paragraphs (then lines, then sentences, then a hard slice as a
+// last resort) so no part starts or ends mid-thought, and nothing is dropped.
+// ---------------------------------------------------------------------------
+
+export const PART_CHARS = 14_000; // ~3.5k tokens: inside the 1k-4k summarisation sweet spot
+
+export function splitIntoParts(text: string, max = PART_CHARS): string[] {
+  const clean = text.trim();
+  if (clean.length <= max) return [clean];
+
+  // 1. break into atoms that each fit in `max`
+  const atoms: string[] = [];
+  for (const para of clean.split(/\n{2,}/)) {
+    pushFitting(para, max, atoms);
+  }
+
+  // 2. greedily pack atoms into parts
+  const parts: string[] = [];
+  let cur = "";
+  for (const atom of atoms) {
+    const next = cur ? `${cur}\n\n${atom}` : atom;
+    if (next.length > max && cur) {
+      parts.push(cur);
+      cur = atom;
+    } else {
+      cur = next;
+    }
+  }
+  if (cur) parts.push(cur);
+
+  // 3. don't leave a tiny orphan part at the end
+  if (parts.length >= 2) {
+    const last = parts[parts.length - 1];
+    const prev = parts[parts.length - 2];
+    if (last.length < max * 0.25 && prev.length + last.length + 2 <= max * 1.25) {
+      parts.splice(parts.length - 2, 2, `${prev}\n\n${last}`);
+    }
+  }
+
+  // 4. safety check: every non-space character must still be present
+  const strip = (t: string) => t.replace(/\s+/g, "");
+  if (strip(parts.join("")) !== strip(clean)) {
+    throw new Error("Splitting a long unit lost text; refusing to continue.");
+  }
+  return parts;
+}
+
+function pushFitting(piece: string, max: number, out: string[]) {
+  if (piece.length <= max) {
+    if (piece.trim()) out.push(piece.trim());
+    return;
+  }
+  // try lines, then sentences, then a hard slice
+  const lines = piece.split(/\n/);
+  if (lines.length > 1) {
+    packInto(lines, "\n", max, out);
+    return;
+  }
+  const sentences = piece.split(/(?<=[.!?])\s+/);
+  if (sentences.length > 1) {
+    packInto(sentences, " ", max, out);
+    return;
+  }
+  for (let i = 0; i < piece.length; i += max) out.push(piece.slice(i, i + max));
+}
+
+function packInto(units: string[], sep: string, max: number, out: string[]) {
+  let cur = "";
+  for (const u of units) {
+    if (u.length > max) {
+      if (cur) out.push(cur);
+      cur = "";
+      pushFitting(u, max, out);
+      continue;
+    }
+    const next = cur ? `${cur}${sep}${u}` : u;
+    if (next.length > max && cur) {
+      out.push(cur);
+      cur = u;
+    } else {
+      cur = next;
+    }
+  }
+  if (cur.trim()) out.push(cur);
+}

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, CheckCircle2, GraduationCap, Loader2 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import QuizPanel from "@/components/QuizPanel";
 import { createClient } from "@/lib/supabase/client";
 import { readFunctionError } from "@/lib/functionError";
 
@@ -22,6 +23,10 @@ type Lesson = {
   totalModules: number;
   isLastInModule: boolean;
   nextModuleTitle: string | null;
+  partNumber: number;
+  totalParts: number;
+  isLastPartOfUnit: boolean;
+  mode: "objective" | "theory";
 };
 
 export default function LearnClient() {
@@ -32,6 +37,7 @@ export default function LearnClient() {
   const materialId = searchParams.get("material");
   const [lesson, setLesson] = useState<Lesson | null>(null);
   const [moduleDone, setModuleDone] = useState(false);
+  const [quizOpen, setQuizOpen] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -54,6 +60,7 @@ export default function LearnClient() {
         return;
       }
       setModuleDone(false);
+      setQuizOpen(false);
       setLesson(data as Lesson);
       window.scrollTo({ top: 0 });
     },
@@ -67,6 +74,7 @@ export default function LearnClient() {
 
   function onNext() {
     if (!lesson) return;
+    setQuizOpen(false);
     if (lesson.isLastInModule) {
       setModuleDone(true);
       window.scrollTo({ top: 0 });
@@ -155,15 +163,41 @@ export default function LearnClient() {
               </button>
             )}
           </div>
+        ) : lesson && quizOpen && materialId ? (
+          <QuizPanel
+            materialId={materialId}
+            unitNumber={lesson.unitNumber}
+            continueLabel={lesson.isLastInModule ? "Finish module" : "Next unit"}
+            onContinue={onNext}
+            onBack={() => setQuizOpen(false)}
+          />
         ) : lesson ? (
           <div className="rounded-2xl bg-white p-6 shadow-sm">
             <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted">
               Module {lesson.moduleNumber} · Unit {lesson.unitInModule} of {lesson.unitsInModule}
+              {lesson.totalParts > 1 && ` · Part ${lesson.partNumber} of ${lesson.totalParts}`}
             </p>
             <h2 className="mb-4 font-serif text-xl font-bold text-wine">{lesson.title}</h2>
             <div className="lesson-md text-sm leading-relaxed text-ink">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{lesson.lesson}</ReactMarkdown>
             </div>
+
+            {lesson.isLastPartOfUnit && (
+              <div className="mt-8 rounded-xl border border-wine/20 bg-cream p-4 text-center">
+                <p className="mb-1 text-sm font-semibold text-ink">Test yourself (optional)</p>
+                <p className="mb-3 text-xs text-muted">
+                  {lesson.mode === "objective"
+                    ? "10 multiple-choice questions on this unit. Skip it any time."
+                    : "4 written questions on this unit, marked for you. Skip it any time."}
+                </p>
+                <button
+                  onClick={() => setQuizOpen(true)}
+                  className="rounded-full border border-wine px-5 py-2 text-sm font-medium text-wine transition active:scale-95"
+                >
+                  Take the quiz
+                </button>
+              </div>
+            )}
 
             <div className="mt-6 flex items-center justify-between gap-3">
               <button
@@ -182,7 +216,7 @@ export default function LearnClient() {
                   <Loader2 size={16} className="animate-spin" />
                 ) : (
                   <>
-                    {lesson.isLastInModule ? "Finish module" : "Next"} <ArrowRight size={16} />
+                    {lesson.isLastInModule ? "Finish module" : lesson.isLastPartOfUnit ? "Next unit" : "Next part"} <ArrowRight size={16} />
                   </>
                 )}
               </button>

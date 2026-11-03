@@ -15,6 +15,7 @@ export default function LearnHomePage() {
   const [stage, setStage] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [mode, setMode] = useState<"objective" | "theory" | null>(null);
   const [ready, setReady] = useState<{ href: string; name: string } | null>(null);
 
   const load = useCallback(async () => {
@@ -32,6 +33,10 @@ export default function LearnHomePage() {
   async function handleUpload(files: File[]) {
     const f = files[0];
     if (!f) return;
+    if (!mode) {
+      setError("Choose Objective or Theory first.");
+      return;
+    }
     setFile(f);
     setError(null);
     setStage("Uploading…");
@@ -57,7 +62,7 @@ export default function LearnHomePage() {
 
       const { data: mat, error: matErr } = await supabase
         .from("materials")
-        .insert({ workspace_id: ws.id, file_name: f.name, storage_path: path })
+        .insert({ workspace_id: ws.id, file_name: f.name, storage_path: path, learn_mode: mode })
         .select()
         .single();
       if (matErr || !mat) throw new Error("Couldn't save this material.");
@@ -134,7 +139,13 @@ export default function LearnHomePage() {
                 </button>
               </>
             ) : (
-              <UploadZone kind="material" onFiles={handleUpload} />
+              <>
+                <ModePicker mode={mode} onChange={(m) => { setMode(m); setError(null); }} />
+                <div className={mode ? "" : "pointer-events-none opacity-50"}>
+                  <UploadZone kind="material" onFiles={handleUpload} />
+                </div>
+                {!mode && error && <p className="mt-2 text-xs text-wine-dark">{error}</p>}
+              </>
             )}
           </section>
         )}
@@ -171,5 +182,49 @@ export default function LearnHomePage() {
         )}
       </div>
     </main>
+  );
+}
+
+function ModePicker({
+  mode,
+  onChange,
+}: {
+  mode: "objective" | "theory" | null;
+  onChange: (m: "objective" | "theory") => void;
+}) {
+  const options = [
+    {
+      id: "objective" as const,
+      title: "Objective",
+      hint: "100 and 200 level. Multiple-choice exam focus.",
+    },
+    {
+      id: "theory" as const,
+      title: "Theory",
+      hint: "300 level. Written exam focus.",
+    },
+  ];
+  return (
+    <div className="mb-3">
+      <p className="mb-2 text-sm font-medium text-ink">What are you studying for?</p>
+      <div className="grid grid-cols-2 gap-3">
+        {options.map((o) => (
+          <button
+            key={o.id}
+            type="button"
+            onClick={() => onChange(o.id)}
+            aria-pressed={mode === o.id}
+            className={`rounded-xl border p-3 text-left transition ${
+              mode === o.id
+                ? "border-wine bg-wine/10"
+                : "border-cream-dark bg-white hover:bg-cream"
+            }`}
+          >
+            <span className="block text-sm font-semibold text-ink">{o.title}</span>
+            <span className="text-xs text-muted">{o.hint}</span>
+          </button>
+        ))}
+      </div>
+    </div>
   );
 }

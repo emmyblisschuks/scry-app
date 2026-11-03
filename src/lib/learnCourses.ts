@@ -51,8 +51,11 @@ export async function loadLearnCourses(
     const units = m.material_units ?? [];
     const currentUnit: number = p?.current_unit ?? 0;
     const cur = units.find((u) => u.unit_number === currentUnit);
+    // parts of one long unit count as one unit
     const inModule = cur
-      ? units.filter((u) => u.module_number === cur.module_number).length
+      ? new Set(
+          units.filter((u) => u.module_number === cur.module_number).map((u) => u.unit_in_module)
+        ).size
       : 0;
     const modules = new Set(units.map((u) => u.module_number));
     return {

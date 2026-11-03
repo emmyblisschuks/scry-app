@@ -1,4 +1,4 @@
-import { LESSON_SYSTEM_PROMPT } from "./lesson-prompt.ts";
+import { getLessonPrompt, type LearnMode } from "./lesson-prompt.ts";
 // Deno-native Gemini REST client, used by Edge Functions only.
 // Mirrors src/lib/gemini/client.ts but kept separate since Edge Functions
 // don't share a bundler with the Next.js app.
@@ -153,40 +153,238 @@ Rules:
   return { answer, confidence, sourceSnippet };
 }
 
-// Learn Mode: teaches one unit of a material in plain language with
-// real-world examples, like explaining it to a secondary school student.
-export async function teachUnit(
-  apiKey: string,
-  unitTitle: string,
-  unitText: string
-): Promise<string> {
-  const systemInstruction = LESSON_SYSTEM_PROMPT;
+// ---------------------------------------------------------------------------
+// Learn Mode
+// ---------------------------------------------------------------------------
 
+type GenOpts = { temperature?: number; json?: boolean; maxOutputTokens?: number };
+
+// One text-generation call. Throws (so nothing half-finished is ever cached)
+// if the model stopped early or returned nothing.
+async function generateText(
+  apiKey: string,
+  systemInstruction: string,
+  userText: string,
+  label: string,
+  opts: GenOpts = {}
+): Promise<string> {
   const res = await geminiPost(
     `${BASE_URL}/models/${GENERATE_MODEL}:generateContent?key=${apiKey}`,
     {
       systemInstruction: { parts: [{ text: systemInstruction }] },
-      contents: [
-        {
-          role: "user",
-          parts: [
-            { text: `Unit title: ${unitTitle}\n\nMaterial for this unit:\n${unitText}` },
-          ],
-        },
-      ],
-      generationConfig: { temperature: 0.4 },
+      contents: [{ role: "user", parts: [{ text: userText }] }],
+      generationConfig: {
+        temperature: opts.temperature ?? 0.4,
+        maxOutputTokens: opts.maxOutputTokens ?? 32768,
+        ...(opts.json ? { responseMimeType: "application/json" } : {}),
+      },
     },
-    "Gemini teach unit"
+    label
   );
-
   const json = await res.json();
-  const parts: { text?: string; thought?: boolean }[] =
-    json.candidates?.[0]?.content?.parts ?? [];
-  return parts
+  const candidate = json.candidates?.[0];
+  const parts: { text?: string; thought?: boolean }[] = candidate?.content?.parts ?? [];
+  const text = parts
     .filter((p) => !p.thought)
     .map((p) => p.text ?? "")
     .join("")
     .trim();
+  const reason: string | undefined = candidate?.finishReason;
+  if (reason === "MAX_TOKENS") {
+    throw new Error(`${label}: the answer was cut off before it finished. Please try again.`);
+  }
+  if (!text) {
+    throw new Error(`${label}: the model returned nothing${reason ? ` (${reason})` : ""}. Please try again.`);
+  }
+  return text;
+}
+
+export type PartInfo = {
+  mode: LearnMode;
+  partNumber: number;
+  totalParts: number;
+  contextBefore?: string; // tail of the previous part, for continuity only
+};
+
+// Teaches one unit (or one part of a long unit) using the guardrail prompt for
+// the course's mode (objective or theory).
+export async function teachUnit(
+  apiKey: string,
+  unitTitle: string,
+  unitText: string,
+  info: PartInfo
+): Promise<string> {
+  const { mode, partNumber, totalParts, contextBefore } = info;
+  const where =
+    totalParts > 1
+      ? `This is Part ${partNumber} of ${totalParts} of this unit. ${
+          partNumber === totalParts ? "It is the FINAL part." : "It is NOT the final part."
+        }`
+      : "This is a complete unit in a single part.";
+  const context = contextBefore
+    ? `Context only (end of the previous part, do not teach it again):\n${contextBefore}\n\n`
+    : "";
+
+  return generateText(
+    apiKey,
+    getLessonPrompt(mode),
+    `Unit title: ${unitTitle}\n${where}\n\n${context}Material for this part:\n${unitText}`,
+    "Gemini teach unit"
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Quiz
+// ---------------------------------------------------------------------------
+
+export type ObjectiveQuestion = {
+  question: string;
+  options: string[];
+  answerIndex: number;
+  explanation: string;
+};
+export type TheoryQuestion = {
+  question: string;
+  modelAnswer: string;
+  points: string[];
+};
+
+const OBJECTIVE_QUIZ_PROMPT = `You write multiple-choice practice questions for a National Open University of Nigeria (NOUN) student, using ONLY the unit text you are given. Reply with JSON only, in exactly this shape:
+{"questions":[{"question":"...","options":["...","...","...","..."],"answerIndex":0,"explanation":"..."}]}
+
+Rules:
+- Exactly 10 questions that cover the unit's most important facts across the WHOLE unit, not just the start.
+- One fact per question. Every question must be answerable from the unit text alone.
+- Exactly 4 options. One is correct. The other three must be plausible, similar in length, wording and form, and based on real mix-ups or look-alike terms from the text.
+- No "all of the above" or "none of the above". Avoid negative stems. Do not give away the answer in the question wording.
+- "answerIndex" is the position (0 to 3) of the correct option.
+- "explanation" is one or two sentences: why the answer is correct and why the closest wrong option is wrong.
+- Do not use outside knowledge. Do not invent facts.`;
+
+const THEORY_QUIZ_PROMPT = `You write theory (written-exam) practice questions for a National Open University of Nigeria (NOUN) student, using ONLY the unit text you are given. Reply with JSON only, in exactly this shape:
+{"questions":[{"question":"...","modelAnswer":"...","points":["...","..."]}]}
+
+Rules:
+- Exactly 4 questions that cover the most important ideas across the WHOLE unit. Mix kinds: define or explain, list and describe, compare or distinguish, apply or discuss.
+- Every question must be answerable from the unit text alone.
+- "modelAnswer" is a clear answer of 80 to 150 words written only from the unit text.
+- "points" is 3 to 5 short marking points the unit text supports. A full-mark answer covers them.
+- Do not use outside knowledge. Do not invent facts.`;
+
+function shuffle<T>(arr: T[]): T[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function parseJson(text: string): unknown {
+  const cleaned = text.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "").trim();
+  return JSON.parse(cleaned);
+}
+
+export async function generateQuiz(
+  apiKey: string,
+  mode: LearnMode,
+  unitTitle: string,
+  unitText: string
+): Promise<ObjectiveQuestion[] | TheoryQuestion[]> {
+  const raw = await generateText(
+    apiKey,
+    mode === "objective" ? OBJECTIVE_QUIZ_PROMPT : THEORY_QUIZ_PROMPT,
+    `Unit title: ${unitTitle}\n\nUnit text:\n${unitText}`,
+    "Gemini quiz",
+    { temperature: 0.5, json: true }
+  );
+  const data = parseJson(raw) as { questions?: unknown[] };
+  const qs = Array.isArray(data.questions) ? data.questions : [];
+
+  if (mode === "objective") {
+    const out: ObjectiveQuestion[] = [];
+    for (const q of qs as Partial<ObjectiveQuestion>[]) {
+      if (
+        typeof q.question === "string" &&
+        Array.isArray(q.options) &&
+        q.options.length === 4 &&
+        q.options.every((o) => typeof o === "string" && o.trim()) &&
+        Number.isInteger(q.answerIndex) &&
+        q.answerIndex! >= 0 &&
+        q.answerIndex! < 4
+      ) {
+        // shuffle options so the answer position isn't biased by the model
+        const correct = q.options[q.answerIndex!];
+        const options = shuffle(q.options);
+        out.push({
+          question: q.question,
+          options,
+          answerIndex: options.indexOf(correct),
+          explanation: typeof q.explanation === "string" ? q.explanation : "",
+        });
+      }
+    }
+    if (out.length < 5) throw new Error("Couldn't build a good quiz for this unit. Please try again.");
+    return out.slice(0, 10);
+  }
+
+  const out: TheoryQuestion[] = [];
+  for (const q of qs as Partial<TheoryQuestion>[]) {
+    if (
+      typeof q.question === "string" &&
+      typeof q.modelAnswer === "string" &&
+      Array.isArray(q.points) &&
+      q.points.length > 0
+    ) {
+      out.push({
+        question: q.question,
+        modelAnswer: q.modelAnswer,
+        points: q.points.filter((p) => typeof p === "string"),
+      });
+    }
+  }
+  if (out.length < 2) throw new Error("Couldn't build a good quiz for this unit. Please try again.");
+  return out.slice(0, 4);
+}
+
+export type TheoryGrade = { score: number; feedback: string; missed: string[] };
+
+const THEORY_GRADE_PROMPT = `You mark a NOUN student's written answers. For each question you get the question, the marking points and model answer (both taken from the student's own course material), and the student's answer. Reply with JSON only, in exactly this shape:
+{"results":[{"score":0,"feedback":"...","missed":["..."]}]}
+
+Rules:
+- One result per question, in the same order.
+- "score" is a whole number from 0 to 10, based on how many of the marking points the answer covers correctly and how clearly. Credit correct meaning even if the wording differs.
+- Do not give credit for claims that are not supported by the marking points or model answer, and do not reward padding.
+- A blank or irrelevant answer scores 0.
+- "feedback" is 1 to 3 warm, specific sentences: what was good and what to improve.
+- "missed" lists the marking points the answer did not cover (empty if none).`;
+
+export async function gradeTheory(
+  apiKey: string,
+  items: { question: string; modelAnswer: string; points: string[]; studentAnswer: string }[]
+): Promise<TheoryGrade[]> {
+  const body = items
+    .map(
+      (it, i) =>
+        `Question ${i + 1}: ${it.question}\nMarking points: ${it.points.join(" | ")}\nModel answer: ${it.modelAnswer}\nStudent answer: ${it.studentAnswer.trim() || "(blank)"}`
+    )
+    .join("\n\n");
+  const raw = await generateText(apiKey, THEORY_GRADE_PROMPT, body, "Gemini grade", {
+    temperature: 0.2,
+    json: true,
+  });
+  const data = parseJson(raw) as { results?: Partial<TheoryGrade>[] };
+  const results = Array.isArray(data.results) ? data.results : [];
+  return items.map((_, i) => {
+    const r = results[i] ?? {};
+    const score = Math.min(10, Math.max(0, Math.round(Number(r.score) || 0)));
+    return {
+      score,
+      feedback: typeof r.feedback === "string" ? r.feedback : "",
+      missed: Array.isArray(r.missed) ? r.missed.filter((m) => typeof m === "string") : [],
+    };
+  });
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
