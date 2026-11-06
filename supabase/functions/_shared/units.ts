@@ -15,6 +15,17 @@ export type RawUnit = {
 
 const HEADING_RE = /^[ \t]*(UNIT|MODULE)[ \t]+([A-Z0-9]+)\b[:\-]?[ \t]*(.*)$/gim;
 
+// NOUN course PDFs are usually a "Course Guide" (Introduction, Course Aims,
+// Working Through This Course, etc.) glued in front of the real teaching
+// content. Some guides number their own sections "Unit 1", "Unit 2" too, which
+// the heading regex can't tell apart from real units. If that front matter
+// survives (long enough to not be caught by the table-of-contents filter
+// below), it used to get taught as "Module 1" while the real Module 1 was
+// pushed to "Module 2". FRONT_MATTER_RE flags a segment as guide content
+// regardless of its heading, by what it's actually about.
+const FRONT_MATTER_RE =
+  /\b(course guide|working through this course|how to study this course|course aims?|course objectives?|what you will (?:learn|need)|course information|credit units?|course materials?|academic calendar|facilitators?|study centre|icons used|tutor[- ]marked assignment(?:s)? \(tma\)|how to get the most)\b/i;
+
 type Heading = { kind: "UNIT" | "MODULE"; label: string; title: string; index: number };
 
 export function splitIntoUnits(text: string): RawUnit[] {
@@ -39,12 +50,17 @@ export function splitIntoUnits(text: string): RawUnit[] {
     let moduleTitle = "Course";
     let unitInModule = 0;
     let lastModuleLabel: string | null = null;
+    // When the course has real MODULE headings, nothing before the first one
+    // is real teaching content, however heading-like it looks (a guide's own
+    // "Unit 1"/"Unit 2" sections included). Gate unit creation on it.
+    let seenModule = !hasModules;
 
     for (let i = 0; i < headings.length; i++) {
       const h = headings[i];
       const end = i + 1 < headings.length ? headings[i + 1].index : clean.length;
 
       if (h.kind === "MODULE" && hasModules) {
+        seenModule = true;
         if (h.label !== lastModuleLabel) {
           moduleNumber += 1;
           unitInModule = 0;
@@ -54,8 +70,10 @@ export function splitIntoUnits(text: string): RawUnit[] {
       }
 
       if (h.kind !== unitKind) continue;
+      if (!seenModule) continue; // guide's own pre-Module-1 "unit" sections
       const segment = clean.slice(h.index, end).trim();
       if (segment.length <= 200) continue; // table-of-contents lines etc.
+      if (units.length === 0 && FRONT_MATTER_RE.test(segment.slice(0, 600))) continue; // front matter safety net
 
       if (moduleNumber === 0) moduleNumber = 1;
       unitInModule += 1;

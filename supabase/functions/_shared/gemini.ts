@@ -13,6 +13,15 @@ const EMBED_DIMS = 768;
 const GENERATE_MODEL = Deno.env.get("GEMINI_MODEL") ?? "gemini-3.5-flash";
 const BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
+// Optional fallback for text generation (teaching, quizzes, grading, Q&A).
+// Any OpenAI-compatible /chat/completions endpoint works here: OpenRouter,
+// Groq, Together, Fireworks, or OpenAI itself. Unset FALLBACK_API_KEY means
+// no fallback — Gemini errors surface as before. Set with e.g.:
+//   supabase secrets set FALLBACK_API_KEY=sk-or-... FALLBACK_BASE_URL=https://openrouter.ai/api/v1 FALLBACK_MODEL=meta-llama/llama-3.3-70b-instruct:free
+const FALLBACK_API_KEY = Deno.env.get("FALLBACK_API_KEY");
+const FALLBACK_BASE_URL = (Deno.env.get("FALLBACK_BASE_URL") ?? "https://openrouter.ai/api/v1").replace(/\/$/, "");
+const FALLBACK_MODEL = Deno.env.get("FALLBACK_MODEL") ?? "meta-llama/llama-3.3-70b-instruct:free";
+
 type EmbedTask = "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY";
 
 // POST to Gemini, retrying 429/503 a couple of times and honouring the
@@ -118,28 +127,13 @@ Rules:
 - If the context does not contain information relevant to the question at all, respond with "UNSURE" on the first line, "N/A" on the second line, and CONFIDENCE: UNSURE.
 - Never fabricate a supporting sentence that isn't actually in the context.`;
 
-  const res = await geminiPost(
-    `${BASE_URL}/models/${GENERATE_MODEL}:generateContent?key=${apiKey}`,
-    {
-      systemInstruction: { parts: [{ text: systemInstruction }] },
-      contents: [
-        {
-          role: "user",
-          parts: [{ text: `Context:\n${context}\n\nQuestion:\n${question}` }],
-        },
-      ],
-      generationConfig: { temperature: 0 },
-    },
-    "Gemini generate"
+  const text = await generateText(
+    apiKey,
+    systemInstruction,
+    `Context:\n${context}\n\nQuestion:\n${question}`,
+    "Gemini generate",
+    { temperature: 0 }
   );
-
-  const json = await res.json();
-  const parts: { text?: string; thought?: boolean }[] =
-    json.candidates?.[0]?.content?.parts ?? [];
-  const text: string = parts
-    .filter((p) => !p.thought)
-    .map((p) => p.text ?? "")
-    .join("");
   const lines = text.trim().split("\n").map((l: string) => l.trim());
 
   const answer = lines[0] ?? "UNSURE";
@@ -159,14 +153,14 @@ Rules:
 
 type GenOpts = { temperature?: number; json?: boolean; maxOutputTokens?: number };
 
-// One text-generation call. Throws (so nothing half-finished is ever cached)
-// if the model stopped early or returned nothing.
-async function generateText(
+// One text-generation call against Gemini. Throws (so nothing half-finished
+// is ever cached) if the model stopped early or returned nothing.
+async function generateViaGemini(
   apiKey: string,
   systemInstruction: string,
   userText: string,
   label: string,
-  opts: GenOpts = {}
+  opts: GenOpts
 ): Promise<string> {
   const res = await geminiPost(
     `${BASE_URL}/models/${GENERATE_MODEL}:generateContent?key=${apiKey}`,
@@ -197,6 +191,67 @@ async function generateText(
     throw new Error(`${label}: the model returned nothing${reason ? ` (${reason})` : ""}. Please try again.`);
   }
   return text;
+}
+
+// Same call against the OpenAI-compatible fallback endpoint. Only used when
+// FALLBACK_API_KEY is set and Gemini has already failed (including its own
+// 429/503 retries).
+async function generateViaFallback(
+  systemInstruction: string,
+  userText: string,
+  label: string,
+  opts: GenOpts
+): Promise<string> {
+  const res = await fetch(`${FALLBACK_BASE_URL}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${FALLBACK_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: FALLBACK_MODEL,
+      temperature: opts.temperature ?? 0.4,
+      max_tokens: Math.min(opts.maxOutputTokens ?? 8000, 8000),
+      ...(opts.json ? { response_format: { type: "json_object" } } : {}),
+      messages: [
+        { role: "system", content: systemInstruction },
+        { role: "user", content: userText },
+      ],
+    }),
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`${label} (fallback model) failed: ${res.status} ${text}`);
+  }
+  const json = await res.json();
+  const text: string | undefined = json.choices?.[0]?.message?.content?.trim();
+  const reason: string | undefined = json.choices?.[0]?.finish_reason;
+  if (reason === "length") {
+    throw new Error(`${label} (fallback model): the answer was cut off before it finished. Please try again.`);
+  }
+  if (!text) {
+    throw new Error(`${label} (fallback model): the model returned nothing. Please try again.`);
+  }
+  return text;
+}
+
+// Tries Gemini first; if it fails (rate-limited, down, or any other error)
+// and a fallback model is configured, retries once on that model instead of
+// failing the whole request.
+async function generateText(
+  apiKey: string,
+  systemInstruction: string,
+  userText: string,
+  label: string,
+  opts: GenOpts = {}
+): Promise<string> {
+  try {
+    return await generateViaGemini(apiKey, systemInstruction, userText, label, opts);
+  } catch (err) {
+    if (!FALLBACK_API_KEY) throw err;
+    console.error(`${label}: Gemini failed, trying fallback model (${FALLBACK_MODEL}). Cause: ${err}`);
+    return await generateViaFallback(systemInstruction, userText, label, opts);
+  }
 }
 
 export type PartInfo = {
