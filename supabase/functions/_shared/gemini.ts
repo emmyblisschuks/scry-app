@@ -17,10 +17,12 @@ const BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 // Any OpenAI-compatible /chat/completions endpoint works here: OpenRouter,
 // Groq, Together, Fireworks, or OpenAI itself. Unset FALLBACK_API_KEY means
 // no fallback — Gemini errors surface as before. Set with e.g.:
-//   supabase secrets set FALLBACK_API_KEY=sk-or-... FALLBACK_BASE_URL=https://openrouter.ai/api/v1 FALLBACK_MODEL=meta-llama/llama-3.3-70b-instruct:free
+// openrouter/free is OpenRouter's own router: it picks a free model for you
+// at $0, so it never goes stale the way naming one specific free model does.
+//   supabase secrets set FALLBACK_API_KEY=sk-or-...
 const FALLBACK_API_KEY = Deno.env.get("FALLBACK_API_KEY");
 const FALLBACK_BASE_URL = (Deno.env.get("FALLBACK_BASE_URL") ?? "https://openrouter.ai/api/v1").replace(/\/$/, "");
-const FALLBACK_MODEL = Deno.env.get("FALLBACK_MODEL") ?? "meta-llama/llama-3.3-70b-instruct:free";
+const FALLBACK_MODEL = Deno.env.get("FALLBACK_MODEL") ?? "openrouter/free";
 
 type EmbedTask = "RETRIEVAL_DOCUMENT" | "RETRIEVAL_QUERY";
 
