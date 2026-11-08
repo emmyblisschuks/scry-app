@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Fraunces, Inter } from "next/font/google";
+import { Fraunces, Inter, Rajdhani } from "next/font/google";
 import "./globals.css";
 
 // Inter is the workhorse: it's declared in globals.css as --font-sans but
@@ -24,6 +24,16 @@ const fraunces = Fraunces({
   axes: ["opsz", "SOFT", "WONK"],
 });
 
+// Rajdhani: a condensed, geometric display face for stats and HUD-style
+// numbers (progress %, module/unit counters, quiz scores) — the "mini
+// gaming UI" touch, kept to small accent spots rather than body text.
+const rajdhani = Rajdhani({
+  subsets: ["latin"],
+  weight: ["600", "700"],
+  variable: "--font-rajdhani",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
   title: "Scry — Smarter studying, clearer answers",
   description:
@@ -34,7 +44,10 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" className={`h-full antialiased ${inter.variable} ${fraunces.variable}`}>
+    <html
+      lang="en"
+      className={`h-full antialiased ${inter.variable} ${fraunces.variable} ${rajdhani.variable}`}
+    >
       <body className="min-h-full flex flex-col font-sans">{children}</body>
     </html>
   );

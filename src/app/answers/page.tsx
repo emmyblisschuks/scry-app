@@ -150,7 +150,7 @@ export default function AnswersDashboardPage() {
         </header>
 
         <button
-          onClick={() => router.push("/dashboard")}
+          onClick={() => router.back()}
           className="mb-4 flex items-center gap-2 text-sm text-muted"
         >
           <ArrowLeft size={16} /> Dashboard

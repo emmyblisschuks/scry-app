@@ -126,14 +126,14 @@ export default function QuizPanel({
     return (
       <div className="rounded-2xl bg-white p-6 shadow-sm">
         <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted">Quiz result</p>
-        <h2 className="mb-1 font-serif text-3xl font-bold text-wine">
-          {result.mode === "objective"
-            ? `${result.score} / ${result.total}`
-            : `${result.score} / ${result.total}`}
+        <h2 className="stat-display mb-1 text-4xl text-wine">
+          {result.score} / {result.total}
         </h2>
         <p className="mb-5 text-sm text-muted">
-          {pct}% —{" "}
-          {pct >= 70 ? "Great work." : pct >= 50 ? "Good effort, review what you missed." : "Go back over the lesson and try again."}
+          <span className="stat-display text-base text-wine-dark">{pct}%</span>{" "}
+          <em className="font-serif italic">
+            {pct >= 70 ? "Great work." : pct >= 50 ? "Good effort, review what you missed." : "Go back over the lesson and try again."}
+          </em>
         </p>
 
         <ol className="flex flex-col gap-5">

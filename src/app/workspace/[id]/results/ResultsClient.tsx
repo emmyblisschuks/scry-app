@@ -19,20 +19,18 @@ export default function ResultsClient() {
   const [copied, setCopied] = useState(false);
 
   const load = useCallback(async () => {
-    const { data: ws } = await supabase
-      .from("workspaces")
-      .select("name")
-      .eq("id", id)
-      .single();
+    const [{ data: ws }, { data }] = await Promise.all([
+      supabase.from("workspaces").select("name").eq("id", id).single(),
+      setId
+        ? supabase
+            .from("questions")
+            .select("id, order_index, answers(answer_text, confidence, source_snippet)")
+            .eq("question_set_id", setId)
+            .order("order_index")
+        : Promise.resolve({ data: null }),
+    ]);
     if (ws) setWorkspaceName(ws.name);
-
     if (!setId) return;
-
-    const { data } = await supabase
-      .from("questions")
-      .select("id, order_index, answers(answer_text, confidence, source_snippet)")
-      .eq("question_set_id", setId)
-      .order("order_index");
 
     type Row = {
       id: string;
@@ -93,7 +91,7 @@ export default function ResultsClient() {
             {copied ? "Copied!" : "Copy All"}
           </button>
           <button
-            onClick={() => router.push(`/workspace/${id}`)}
+            onClick={() => router.back()}
             className="flex items-center gap-2 rounded-full border border-wine/30 px-4 py-2 text-sm font-medium text-wine"
           >
             <ArrowLeft size={14} />

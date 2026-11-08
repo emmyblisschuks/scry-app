@@ -105,10 +105,10 @@ export default function DashboardPage() {
           {profile && <ProfileMenu user={profile} onSignOut={signOut} />}
         </header>
 
-        <h1 className="mb-1 text-2xl font-bold text-ink">
+        <h1 className="mb-1 font-serif text-2xl font-bold text-ink">
           {profile?.name ? `${greeting}, ${profile.name.trim().split(/\s+/)[0]}` : greeting}
         </h1>
-        <p className="mb-6 text-sm text-muted">What are you doing today?</p>
+        <p className="mb-6 text-sm italic text-muted">What are you doing today?</p>
 
         {loading ? (
           <p className="text-sm text-muted">Loading…</p>

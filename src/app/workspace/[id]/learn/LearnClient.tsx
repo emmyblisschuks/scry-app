@@ -87,7 +87,7 @@ export default function LearnClient() {
     <main className="min-h-screen bg-cream px-6 py-8 md:px-12">
       <div className="mx-auto max-w-2xl">
         <button
-          onClick={() => router.push("/learn")}
+          onClick={() => router.back()}
           className="mb-4 flex items-center gap-2 text-sm text-muted"
         >
           <ArrowLeft size={16} />
@@ -173,11 +173,11 @@ export default function LearnClient() {
           />
         ) : lesson ? (
           <div className="rounded-2xl bg-white p-6 shadow-sm">
-            <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted">
+            <p className="stat-display mb-1 text-xs uppercase tracking-wider text-muted">
               Module {lesson.moduleNumber} · Unit {lesson.unitInModule} of {lesson.unitsInModule}
               {lesson.totalParts > 1 && ` · Part ${lesson.partNumber} of ${lesson.totalParts}`}
             </p>
-            <h2 className="mb-4 font-serif text-xl font-bold text-wine">{lesson.title}</h2>
+            <h2 className="mb-4 font-serif text-xl font-bold text-wine italic">{lesson.title}</h2>
             <div className="lesson-md text-sm leading-relaxed text-ink">
               <ReactMarkdown remarkPlugins={[remarkGfm]}>{lesson.lesson}</ReactMarkdown>
             </div>

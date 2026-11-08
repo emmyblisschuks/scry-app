@@ -356,7 +356,7 @@ export default function WorkspaceClient() {
     <main className="min-h-screen bg-cream px-6 py-8 md:px-12">
       <div className="mx-auto max-w-2xl">
         <button
-          onClick={() => router.push("/answers")}
+          onClick={() => router.back()}
           className="mb-4 flex items-center gap-2 text-sm text-muted"
         >
           <ArrowLeft size={16} />
