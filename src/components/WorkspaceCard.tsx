@@ -23,7 +23,7 @@ export default function WorkspaceCard({
           onDelete();
         }}
         aria-label={`Delete ${workspace.name}`}
-        className="absolute right-4 top-4 text-wine opacity-0 transition group-hover:opacity-100"
+        className="absolute right-4 top-4 rounded-full p-1.5 text-muted transition hover:bg-wine/10 hover:text-wine-dark"
       >
         <Trash2 size={16} />
       </button>
