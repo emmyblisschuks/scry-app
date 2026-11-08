@@ -8,6 +8,7 @@ import { Workspace } from "@/lib/types";
 import WorkspaceCard from "@/components/WorkspaceCard";
 import CreateWorkspaceModal from "@/components/CreateWorkspaceModal";
 import DeleteConfirmModal from "@/components/DeleteConfirmModal";
+import { deleteWorkspaceCompletely } from "@/lib/deleteWorkspace";
 import Logo from "@/components/Logo";
 import ProfileMenu, { ProfileUser } from "@/components/ProfileMenu";
 
@@ -119,12 +120,23 @@ export default function AnswersDashboardPage() {
 
   async function deleteWorkspace() {
     if (!pendingDelete) return;
-    const { error: deleteError } = await supabase
-      .from("workspaces")
-      .delete()
-      .eq("id", pendingDelete.id);
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session?.user) {
+      setError("Your session expired. Please sign in again.");
+      setPendingDelete(null);
+      return;
+    }
+    // Also clears the uploaded files (material + question screenshots) out
+    // of Supabase Storage, not just the database rows.
+    const { error: deleteError } = await deleteWorkspaceCompletely(
+      supabase,
+      session.user.id,
+      pendingDelete.id
+    );
     if (deleteError) {
-      setError(`Couldn't delete workspace: ${deleteError.message}`);
+      setError(`Couldn't delete workspace: ${deleteError}`);
     }
     setPendingDelete(null);
     await load();

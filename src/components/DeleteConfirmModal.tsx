@@ -5,10 +5,12 @@ import { X, Trash2 } from "lucide-react";
 
 export default function DeleteConfirmModal({
   itemName,
+  description,
   onClose,
   onConfirm,
 }: {
   itemName: string;
+  description?: string;
   onClose: () => void;
   onConfirm: () => Promise<void>;
 }) {
@@ -46,9 +48,9 @@ export default function DeleteConfirmModal({
 
         <h2 className="text-lg font-semibold text-ink">Delete this workspace?</h2>
         <p className="mt-1 text-sm text-muted">
-          This removes the course material, questions, and answers inside{" "}
-          <span className="font-medium text-ink">“{itemName}”</span>. This
-          can&apos;t be undone.
+          {description ?? "This removes the course material, questions, and answers inside"}{" "}
+          <span className="font-medium text-ink">“{itemName}”</span>, including its uploaded
+          files. This can&apos;t be undone.
         </p>
 
         <div className="mt-5 flex gap-3">

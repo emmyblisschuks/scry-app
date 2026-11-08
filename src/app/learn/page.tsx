@@ -2,11 +2,13 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, GraduationCap, Loader2 } from "lucide-react";
+import { ArrowLeft, GraduationCap, Loader2, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import UploadZone, { FileChip } from "@/components/UploadZone";
 import { LearnCourse, loadLearnCourses, learnHref, whereYouStopped } from "@/lib/learnCourses";
 import { uploadWithProgress } from "@/lib/uploadWithProgress";
+import { deleteWorkspaceCompletely } from "@/lib/deleteWorkspace";
+import DeleteConfirmModal from "@/components/DeleteConfirmModal";
 
 export default function LearnHomePage() {
   const router = useRouter();
@@ -18,6 +20,10 @@ export default function LearnHomePage() {
   const [error, setError] = useState<string | null>(null);
   const [mode, setMode] = useState<"objective" | "theory" | null>(null);
   const [ready, setReady] = useState<{ href: string; name: string } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ workspaceId: string; name: string } | null>(
+    null
+  );
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setCourses(await loadLearnCourses(supabase));
@@ -98,6 +104,25 @@ export default function LearnHomePage() {
     }
   }
 
+  async function deleteCourse() {
+    if (!pendingDelete) return;
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    if (!session?.user) {
+      setDeleteError("Your session expired. Please sign in again.");
+      setPendingDelete(null);
+      return;
+    }
+    // Clears the uploaded course file out of Supabase Storage too, along
+    // with every DB row that hangs off it (units, lessons, quizzes,
+    // progress) — not just hiding it from this list.
+    const { error } = await deleteWorkspaceCompletely(supabase, session.user.id, pendingDelete.workspaceId);
+    if (error) setDeleteError(`Couldn't delete this course: ${error}`);
+    setPendingDelete(null);
+    await load();
+  }
+
   return (
     <main className="min-h-screen bg-cream px-6 py-8 md:px-12">
       <div className="mx-auto max-w-2xl">
@@ -171,6 +196,17 @@ export default function LearnHomePage() {
         )}
 
         <h2 className="mb-3 text-lg font-bold text-ink">My courses</h2>
+        {deleteError && (
+          <div
+            role="alert"
+            className="mb-4 flex items-start justify-between gap-3 rounded-xl border border-wine/20 bg-wine/5 px-4 py-3 text-sm text-wine-dark"
+          >
+            <span>{deleteError}</span>
+            <button onClick={() => setDeleteError(null)} className="font-medium underline">
+              Dismiss
+            </button>
+          </div>
+        )}
         {loading ? (
           <p className="text-sm text-muted">Loading…</p>
         ) : courses.length === 0 ? (
@@ -180,10 +216,10 @@ export default function LearnHomePage() {
         ) : (
           <ul className="flex flex-col gap-2">
             {courses.map((c) => (
-              <li key={c.materialId}>
+              <li key={c.materialId} className="relative">
                 <button
                   onClick={() => router.push(learnHref(c))}
-                  className="w-full rounded-xl bg-white px-4 py-3 text-left shadow-sm transition hover:shadow-md"
+                  className="w-full rounded-xl bg-white px-4 py-3 pr-12 text-left shadow-sm transition hover:shadow-md"
                 >
                   <span className="block truncate text-sm font-medium text-ink">{c.name}</span>
                   <span className="text-xs text-muted">{whereYouStopped(c)}</span>
@@ -196,11 +232,27 @@ export default function LearnHomePage() {
                     </span>
                   )}
                 </button>
+                <button
+                  onClick={() => setPendingDelete({ workspaceId: c.workspaceId, name: c.name })}
+                  aria-label={`Delete ${c.name}`}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded-full p-2 text-muted hover:bg-wine/10 hover:text-wine-dark"
+                >
+                  <Trash2 size={16} />
+                </button>
               </li>
             ))}
           </ul>
         )}
       </div>
+
+      {pendingDelete && (
+        <DeleteConfirmModal
+          itemName={pendingDelete.name}
+          description="This removes the course file, lessons, quizzes, and your progress in"
+          onClose={() => setPendingDelete(null)}
+          onConfirm={deleteCourse}
+        />
+      )}
     </main>
   );
 }
