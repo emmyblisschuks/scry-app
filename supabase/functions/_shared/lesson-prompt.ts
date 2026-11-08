@@ -80,8 +80,19 @@ LONG UNITS ARRIVE IN PARTS
 - Exam focus, Practice questions, Self-check, Gaps, exam-writing help and Quick recap belong in the FINAL part only, and should cover the whole unit as far as you can tell from the material you have seen. If you are not in the final part, do not write them.
 - Do the silent inventory for the text of this part only.`;
 
+// Appended to both prompts. The app draws LaTeX with KaTeX, so math must be clean LaTeX.
+const MATH_RULE = `
+
+MATHEMATICS AND FORMULAS
+- Write every formula, equation, variable, exponent, subscript, fraction, sum and Greek letter in LaTeX so it displays like a printed textbook. Never use plain text such as x^2, a_1, sqrt(x) or 1/2 for maths.
+- Inline maths goes between single dollar signs, like $a x^2 + b x + c$. Important or long equations go on their own lines between double dollar signs, like $$P(x) = a_0 + a_1 x + \dots + a_n x^n$$. Put a blank line before and after a display equation.
+- Put equation numbers or labels outside the maths, for example "Equation (3.1):" in the sentence before it. Do not put \text{--- Equation} inside the formula.
+- For several aligned lines use \begin{aligned} ... \end{aligned} inside $$ ... $$, ending each line with \\.
+- Use \frac{a}{b}, \sum_{i=1}^{n}, \sqrt{x}, \approx, \leq, \times, \cdot, \ldots and similar commands. Never use \( \) or \[ \] delimiters.
+- Put a dollar amount in plain text as "N500" or "500 naira", never with a $ sign, so it is not mistaken for maths.`;
+
 export type LearnMode = "objective" | "theory";
 
 export function getLessonPrompt(mode: LearnMode): string {
-  return (mode === "objective" ? OBJECTIVE_PROMPT : THEORY_PROMPT) + PART_RULE;
+  return (mode === "objective" ? OBJECTIVE_PROMPT : THEORY_PROMPT) + MATH_RULE + PART_RULE;
 }

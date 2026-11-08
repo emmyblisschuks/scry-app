@@ -1,10 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { ArrowLeft, ArrowRight, CheckCircle2, GraduationCap, Loader2 } from "lucide-react";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
+import LessonMarkdown from "@/components/LessonMarkdown";
 import QuizPanel from "@/components/QuizPanel";
 import { createClient } from "@/lib/supabase/client";
 import { readFunctionError } from "@/lib/functionError";
@@ -46,25 +45,67 @@ export default function LearnClient() {
     if (!materialId) router.replace("/learn");
   }, [materialId, router]);
 
+  // Lessons already fetched (or being fetched) this visit, keyed by unit number.
+  // Next/Previous show these instantly instead of waiting on the server.
+  const cache = useRef(new Map<number, Promise<Lesson>>());
+  // Units fetched in the background: the server did not save progress for them.
+  const prefetched = useRef(new Set<number>());
+
+  const fetchUnit = useCallback(
+    (unitNumber: number | undefined, prefetch: boolean): Promise<Lesson> => {
+      const key = unitNumber ?? 0;
+      const hit = key ? cache.current.get(key) : undefined;
+      if (hit) return hit;
+      const p = (async () => {
+        const { data, error: fnError } = await supabase.functions.invoke("teach-unit", {
+          body: { materialId, unitNumber, prefetch },
+        });
+        if (fnError) throw new Error(await readFunctionError(fnError));
+        return data as Lesson;
+      })();
+      if (key) {
+        if (prefetch) prefetched.current.add(key);
+        cache.current.set(key, p);
+        // never keep a failed request, so "Try again" really retries
+        p.catch(() => {
+          cache.current.delete(key);
+          prefetched.current.delete(key);
+        });
+      }
+      return p;
+    },
+    [materialId, supabase]
+  );
+
   const loadUnit = useCallback(
     async (unitNumber?: number) => {
       if (!materialId) return;
       setLoading(true);
       setError(null);
-      const { data, error: fnError } = await supabase.functions.invoke("teach-unit", {
-        body: { materialId, unitNumber },
-      });
-      setLoading(false);
-      if (fnError) {
-        setError(await readFunctionError(fnError));
-        return;
+      try {
+        const data = await fetchUnit(unitNumber, false);
+        cache.current.set(data.unitNumber, Promise.resolve(data));
+        setModuleDone(false);
+        setQuizOpen(false);
+        setLesson(data);
+        window.scrollTo({ top: 0 });
+        // A background-fetched unit was not saved as "where you stopped" yet.
+        if (prefetched.current.delete(data.unitNumber)) {
+          supabase.functions
+            .invoke("teach-unit", {
+              body: { materialId, unitNumber: data.unitNumber, action: "save-progress" },
+            })
+            .catch(() => {});
+        }
+        // Warm up the next unit while the student reads this one.
+        if (data.hasNext) fetchUnit(data.unitNumber + 1, true).catch(() => {});
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Something went wrong");
+      } finally {
+        setLoading(false);
       }
-      setModuleDone(false);
-      setQuizOpen(false);
-      setLesson(data as Lesson);
-      window.scrollTo({ top: 0 });
     },
-    [materialId, supabase]
+    [materialId, fetchUnit, supabase]
   );
 
   useEffect(() => {
@@ -179,7 +220,7 @@ export default function LearnClient() {
             </p>
             <h2 className="mb-4 font-serif text-xl font-bold text-wine italic">{lesson.title}</h2>
             <div className="lesson-md text-sm leading-relaxed text-ink">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{lesson.lesson}</ReactMarkdown>
+              <LessonMarkdown>{lesson.lesson}</LessonMarkdown>
             </div>
 
             {lesson.isLastPartOfUnit && (

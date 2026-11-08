@@ -179,3 +179,7 @@ body[data-theme="dark"] {
 .lesson-md th, .lesson-md td { border: 1px solid #e7ddd2; padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
 .lesson-md th { background: #f4efe9; font-weight: 600; }
 .lesson-md blockquote { border-left: 3px solid #e7ddd2; padding-left: 0.75rem; color: #6b6b6b; }
+
+/* Math (KaTeX) inside lessons */
+.lesson-md .katex { font-size: 1.08em; }
+.lesson-md .katex-display { margin: 1rem 0; overflow-x: auto; overflow-y: hidden; padding: 0.25rem 0; }

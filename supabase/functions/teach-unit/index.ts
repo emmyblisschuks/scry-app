@@ -52,12 +52,12 @@ Deno.serve(async (req) => {
     if (userError || !userData.user) return jsonResponse({ error: "Not authenticated" }, 401);
     const userId = userData.user.id;
 
-    const { materialId, unitNumber, action, answers } = await req.json();
+    const { materialId, unitNumber, action, answers, prefetch } = await req.json();
     if (!materialId) return jsonResponse({ error: "materialId is required" }, 400);
 
     const { data: material, error: materialError } = await supabase
       .from("materials")
-      .select("id, workspace_id, file_name, extracted_text, storage_path, chunks_from, learn_mode")
+      .select("id, workspace_id, file_name, storage_path, chunks_from, learn_mode")
       .eq("id", materialId)
       .single();
     if (materialError || !material) return jsonResponse({ error: "Material not found" }, 404);
@@ -71,7 +71,42 @@ Deno.serve(async (req) => {
       return jsonResponse({ error: "Not authorized" }, 403);
     }
 
-    let extractedText = material.extracted_text as string | null;
+    // Segment into modules, units and (for long units) parts once, then reuse
+    // forever. Anything saved by an older version of the splitter is
+    // re-segmented once; its cached lessons are dropped so they are
+    // regenerated without the old cut-offs.
+    type UnitMeta = {
+      unit_number: number;
+      title: string;
+      module_number: number | null;
+      module_title: string | null;
+      unit_in_module: number | null;
+      part_number: number;
+      total_parts: number;
+      split_version: number;
+    };
+    const unitCols =
+      "unit_number, title, module_number, module_title, unit_in_module, part_number, total_parts, split_version";
+    let { data: units } = await supabase
+      .from("material_units")
+      .select(unitCols)
+      .eq("material_id", materialId)
+      .order("unit_number", { ascending: true });
+
+    if (units && units.length > 0 && (units[0].split_version ?? 1) < SPLIT_VERSION) {
+      await supabase.from("material_units").delete().eq("material_id", materialId);
+      units = [];
+    }
+
+    if (!units || units.length === 0) {
+    // The full course text is large, so it is only loaded when the course
+    // has to be (re)segmented. Every normal click skips this entirely.
+    const { data: textRow } = await supabase
+      .from("materials")
+      .select("extracted_text")
+      .eq("id", materialId)
+      .single();
+    let extractedText = (textRow?.extracted_text as string | null) ?? null;
 
     // Material indexed before Learn Mode existed (or linked to another
     // workspace's copy) won't have extracted_text yet. Backfill it here,
@@ -134,34 +169,6 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Segment into modules, units and (for long units) parts once, then reuse
-    // forever. Anything saved by an older version of the splitter is
-    // re-segmented once; its cached lessons are dropped so they are
-    // regenerated without the old cut-offs.
-    type UnitMeta = {
-      unit_number: number;
-      title: string;
-      module_number: number | null;
-      module_title: string | null;
-      unit_in_module: number | null;
-      part_number: number;
-      total_parts: number;
-      split_version: number;
-    };
-    const unitCols =
-      "unit_number, title, module_number, module_title, unit_in_module, part_number, total_parts, split_version";
-    let { data: units } = await supabase
-      .from("material_units")
-      .select(unitCols)
-      .eq("material_id", materialId)
-      .order("unit_number", { ascending: true });
-
-    if (units && units.length > 0 && (units[0].split_version ?? 1) < SPLIT_VERSION) {
-      await supabase.from("material_units").delete().eq("material_id", materialId);
-      units = [];
-    }
-
-    if (!units || units.length === 0) {
       const rows: Record<string, unknown>[] = [];
       for (const u of splitIntoUnits(extractedText)) {
         const parts = splitIntoParts(u.content);
@@ -214,6 +221,14 @@ Deno.serve(async (req) => {
       });
     }
 
+    // Lightweight call from the app when a student opens a unit that was
+    // already fetched in the background: just remember where they are.
+    if (action === "save-progress") {
+      const n = Math.min(Math.max(1, Number(unitNumber) || 1), totalUnits);
+      await saveProgress(supabase, userId, materialId, material.workspace_id, n);
+      return jsonResponse({ ok: true });
+    }
+
     let targetUnit: number = unitNumber ?? 0;
     if (!targetUnit) {
       const { data: progress } = await supabase
@@ -259,16 +274,13 @@ Deno.serve(async (req) => {
         .eq("id", unitRow.id);
     }
 
-    await supabase.from("learn_progress").upsert(
-      {
-        user_id: userId,
-        material_id: materialId,
-        workspace_id: material.workspace_id,
-        current_unit: targetUnit,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: "user_id,material_id" }
-    );
+    // Background pre-loads must not move the student's place in the course.
+    // For real opens, save progress without making the student wait for it.
+    if (!prefetch) {
+      const saving = saveProgress(supabase, userId, materialId, material.workspace_id, targetUnit);
+      // @ts-expect-error - EdgeRuntime is provided by the Supabase runtime
+      if (typeof EdgeRuntime !== "undefined") EdgeRuntime.waitUntil(saving);
+    }
 
     const current = allUnits.find((u) => u.unit_number === targetUnit)!;
     const next = allUnits.find((u) => u.unit_number === targetUnit + 1);
@@ -304,6 +316,26 @@ Deno.serve(async (req) => {
     return jsonResponse({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
 });
+
+async function saveProgress(
+  supabase: ReturnType<typeof createClient>,
+  userId: string,
+  materialId: string,
+  workspaceId: string,
+  unit: number
+) {
+  const { error } = await supabase.from("learn_progress").upsert(
+    {
+      user_id: userId,
+      material_id: materialId,
+      workspace_id: workspaceId,
+      current_unit: unit,
+      updated_at: new Date().toISOString(),
+    },
+    { onConflict: "user_id,material_id" }
+  );
+  if (error) console.error("progress not saved:", error.message);
+}
 
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
