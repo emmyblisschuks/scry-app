@@ -45,6 +45,39 @@ export function splitIntoUnits(text: string): RawUnit[] {
     // a MODULE heading starts a new module (and a unit of its own only when
     // the material has no UNIT headings at all).
     const unitKind = hasUnits ? "UNIT" : "MODULE";
+
+    // A course's front matter often includes a "List of Modules"/table of
+    // contents page listing every module ("MODULE 1: ...", "MODULE 2: ...",
+    // up to "MODULE 6: ..."), and each of those lines matches HEADING_RE
+    // just like a real module header. Without filtering them out, the
+    // sequential module counter below climbs through all of them before it
+    // ever reaches the real "MODULE 1" in the body, so the course appears to
+    // start at "Module 6" instead of "Module 1". A MODULE heading only
+    // counts as real when it is actually followed (before the next MODULE
+    // heading) by at least one substantial UNIT heading — a listing entry
+    // never is, since the next line is just the next listing entry.
+    const moduleIdxs = headings
+      .map((h, i) => (h.kind === "MODULE" ? i : -1))
+      .filter((i) => i >= 0);
+    const realModuleIdxs = new Set<number>();
+    if (hasUnits) {
+      for (const mi of moduleIdxs) {
+        const nextModuleIdx = moduleIdxs.find((j) => j > mi);
+        const boundEnd =
+          nextModuleIdx !== undefined ? headings[nextModuleIdx].index : clean.length;
+        const hasRealUnit = headings.some((h2, j) => {
+          if (j <= mi || h2.kind !== "UNIT" || headings[j].index >= boundEnd) return false;
+          const end2 = j + 1 < headings.length ? headings[j + 1].index : clean.length;
+          return clean.slice(h2.index, end2).trim().length > 200;
+        });
+        if (hasRealUnit) realModuleIdxs.add(mi);
+      }
+    } else {
+      // No separate UNIT headings: every module heading is also the unit
+      // heading, so "real" is decided by the same length filter used below.
+      for (const mi of moduleIdxs) realModuleIdxs.add(mi);
+    }
+
     const units: RawUnit[] = [];
     let moduleNumber = 0;
     let moduleTitle = "Course";
@@ -59,7 +92,7 @@ export function splitIntoUnits(text: string): RawUnit[] {
       const h = headings[i];
       const end = i + 1 < headings.length ? headings[i + 1].index : clean.length;
 
-      if (h.kind === "MODULE" && hasModules) {
+      if (h.kind === "MODULE" && hasModules && realModuleIdxs.has(i)) {
         seenModule = true;
         if (h.label !== lastModuleLabel) {
           moduleNumber += 1;

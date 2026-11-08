@@ -6,6 +6,7 @@ import { ArrowLeft, GraduationCap, Loader2 } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
 import UploadZone, { FileChip } from "@/components/UploadZone";
 import { LearnCourse, loadLearnCourses, learnHref, whereYouStopped } from "@/lib/learnCourses";
+import { uploadWithProgress } from "@/lib/uploadWithProgress";
 
 export default function LearnHomePage() {
   const router = useRouter();
@@ -39,13 +40,13 @@ export default function LearnHomePage() {
     }
     setFile(f);
     setError(null);
-    setStage("Uploading…");
+    setStage("Uploading… 0%");
     try {
       const {
         data: { session },
       } = await supabase.auth.getSession();
       const user = session?.user;
-      if (!user) throw new Error("You need to be signed in.");
+      if (!user || !session) throw new Error("You need to be signed in.");
 
       const name = f.name.replace(/\.(pdf|docx)$/i, "");
       const { data: ws, error: wsErr } = await supabase
@@ -56,10 +57,12 @@ export default function LearnHomePage() {
       if (wsErr || !ws) throw new Error(wsErr?.message ?? "Couldn't create the course.");
 
       const path = `${user.id}/${ws.id}/${f.name}`;
-      const { error: upErr } = await supabase.storage
-        .from("materials")
-        .upload(path, f, { upsert: true });
-      if (upErr) throw new Error(`Couldn't upload: ${upErr.message}`);
+      // A multi-MB PDF over a slow connection can take a while; a real
+      // percentage (instead of a plain "Uploading…" spinner) is the
+      // difference between "this is working" and "this looks frozen".
+      await uploadWithProgress("materials", path, f, session.access_token, (pct) =>
+        setStage(`Uploading… ${pct}%`)
+      );
 
       const { data: mat, error: matErr } = await supabase
         .from("materials")
@@ -67,6 +70,22 @@ export default function LearnHomePage() {
         .select()
         .single();
       if (matErr || !mat) throw new Error("Couldn't save this material.");
+
+      // Pre-warm: split the course into units and teach its first unit now,
+      // while the student is still looking at the upload screen, instead of
+      // leaving all of that (PDF parsing + segmenting + the first Gemini
+      // lesson call) to happen the moment they tap "Learn this course" —
+      // that's the wait that used to show up as "Learn takes forever".
+      // Best-effort: if it fails or times out here, the lesson simply
+      // generates on first open as before.
+      setStage("Preparing your first lesson…");
+      try {
+        await supabase.functions.invoke("teach-unit", {
+          body: { materialId: mat.id, unitNumber: 1 },
+        });
+      } catch (warmErr) {
+        console.error("pre-warm failed (non-fatal)", warmErr);
+      }
 
       setStage(null);
       setFile(null);

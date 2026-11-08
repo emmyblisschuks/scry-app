@@ -28,7 +28,7 @@ import mammoth from "npm:mammoth@1.8.0";
 // Extracted text is stored whole (up to this safety cap). Long units are split
 // into parts when they are first segmented, so no text is dropped.
 const MAX_EXTRACTED_CHARS = 1_500_000;
-const SPLIT_VERSION = 3;
+const SPLIT_VERSION = 4;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
