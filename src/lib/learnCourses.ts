@@ -18,17 +18,17 @@ export type LearnCourse = {
 export async function loadLearnCourses(
   supabase: SupabaseClient
 ): Promise<LearnCourse[]> {
-  const { data: mats } = await supabase
-    .from("materials")
-    .select(
-      "id, workspace_id, file_name, uploaded_at, workspaces!inner(kind), material_units(unit_number, module_number, unit_in_module)"
-    )
-    .eq("workspaces.kind", "learn")
-    .order("uploaded_at", { ascending: false });
-
-  const { data: progress } = await supabase
-    .from("learn_progress")
-    .select("material_id, current_unit, updated_at");
+  // Two independent reads — run them together instead of stacking round-trips.
+  const [{ data: mats }, { data: progress }] = await Promise.all([
+    supabase
+      .from("materials")
+      .select(
+        "id, workspace_id, file_name, uploaded_at, workspaces!inner(kind), material_units(unit_number, module_number, unit_in_module)"
+      )
+      .eq("workspaces.kind", "learn")
+      .order("uploaded_at", { ascending: false }),
+    supabase.from("learn_progress").select("material_id, current_unit, updated_at"),
+  ]);
 
   const progressByMaterial = new Map(
     (progress ?? []).map((p) => [p.material_id as string, p])

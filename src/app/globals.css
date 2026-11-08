@@ -11,8 +11,8 @@
   --color-warn: #e0a233;
   --color-ok: #3f9a5a;
 
-  --font-serif: Georgia, "Times New Roman", serif;
-  --font-sans: "Inter", system-ui, -apple-system, sans-serif;
+  --font-serif: var(--font-fraunces), Georgia, "Times New Roman", serif;
+  --font-sans: var(--font-inter), system-ui, -apple-system, sans-serif;
 }
 
 html,

@@ -45,31 +45,30 @@ export default function WorkspaceClient() {
   const [starting, setStarting] = useState(false);
 
   const loadWorkspace = useCallback(async () => {
-    const { data } = await supabase
-      .from("workspaces")
-      .select("name, subject_tag")
-      .eq("id", id)
-      .single();
+    // Three independent reads — fire them together instead of stacking their
+    // round-trips one after another.
+    const [{ data }, { data: mats }, { data: sets }] = await Promise.all([
+      supabase.from("workspaces").select("name, subject_tag").eq("id", id).single(),
+      // what this workspace already remembers
+      supabase
+        .from("materials")
+        .select("*")
+        .eq("workspace_id", id)
+        .order("uploaded_at", { ascending: false }),
+      // finished runs, so earlier answers are one tap away
+      supabase
+        .from("question_sets")
+        .select("id, created_at, questions(answers(count))")
+        .eq("workspace_id", id)
+        .eq("status", "done")
+        .order("created_at", { ascending: false }),
+    ]);
     if (data) {
       setWorkspaceName(data.name);
       setSubjectTag(data.subject_tag);
     }
-
-    // what this workspace already remembers
-    const { data: mats } = await supabase
-      .from("materials")
-      .select("*")
-      .eq("workspace_id", id)
-      .order("uploaded_at", { ascending: false });
     setAllMaterials((mats as Material[]) ?? []);
 
-    // finished runs, so earlier answers are one tap away
-    const { data: sets } = await supabase
-      .from("question_sets")
-      .select("id, created_at, questions(answers(count))")
-      .eq("workspace_id", id)
-      .eq("status", "done")
-      .order("created_at", { ascending: false });
     type SetRow = {
       id: string;
       created_at: string;
@@ -230,9 +229,13 @@ export default function WorkspaceClient() {
     // since File objects can't survive a hard navigation. The generating page
     // reads from this same client session, so we upload here and let the
     // generating page poll question_set status.
+    // Local read of the cached session — no network round-trip. The proxy
+    // middleware already re-validated the JWT server-side for this request,
+    // and RLS enforces real authorization on every insert below regardless.
     const {
-      data: { user },
-    } = await supabase.auth.getUser();
+      data: { session },
+    } = await supabase.auth.getSession();
+    const user = session?.user;
     if (!user) return;
 
     // 1. Material: only upload/process what memory doesn't already have

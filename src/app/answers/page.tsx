@@ -22,9 +22,22 @@ export default function AnswersDashboardPage() {
   const [pendingDelete, setPendingDelete] = useState<Workspace | null>(null);
 
   const load = useCallback(async () => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    // getSession() is a local read (no network round-trip); proxy.ts already
+    // re-validated the JWT server-side for this request. Run it alongside
+    // the data query instead of blocking on it first.
+    // answers hang off questions, not question_sets, so the embed has to go
+    // workspaces -> question_sets -> questions -> answers
+    const [{ data: { session } }, { data: ws, error: loadError }] = await Promise.all([
+      supabase.auth.getSession(),
+      supabase
+        .from("workspaces")
+        .select(
+          "*, question_sets(id, status, created_at, questions(answers(count)))"
+        )
+        .eq("kind", "answers")
+        .order("created_at", { ascending: false }),
+    ]);
+    const user = session?.user;
     if (user) {
       setProfile({
         email: user.email ?? "",
@@ -35,16 +48,6 @@ export default function AnswersDashboardPage() {
         avatarUrl: (user.user_metadata?.avatar_url as string | undefined) ?? null,
       });
     }
-
-    // answers hang off questions, not question_sets, so the embed has to go
-    // workspaces -> question_sets -> questions -> answers
-    const { data: ws, error: loadError } = await supabase
-      .from("workspaces")
-      .select(
-        "*, question_sets(id, status, created_at, questions(answers(count)))"
-      )
-      .eq("kind", "answers")
-      .order("created_at", { ascending: false });
 
     if (loadError) {
       setError(`Couldn't load your workspaces: ${loadError.message}`);
@@ -96,8 +99,9 @@ export default function AnswersDashboardPage() {
 
   async function createWorkspace(name: string, subjectTag: string) {
     const {
-      data: { user },
-    } = await supabase.auth.getUser();
+      data: { session },
+    } = await supabase.auth.getSession();
+    const user = session?.user;
     if (!user) {
       throw new Error("Your session expired. Please sign in again.");
     }

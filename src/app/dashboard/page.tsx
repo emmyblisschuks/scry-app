@@ -36,9 +36,19 @@ export default function DashboardPage() {
   }, []);
 
   const load = useCallback(async () => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    // getSession() reads the already-validated JWT from local storage (no
+    // network call); proxy.ts already re-checked it server-side for this
+    // request, so this is purely for the display name/avatar.
+    const [{ data: { session } }, learn, ws] = await Promise.all([
+      supabase.auth.getSession(),
+      loadLearnCourses(supabase),
+      supabase
+        .from("workspaces")
+        .select("id, name, question_sets(questions(answers(count)))")
+        .eq("kind", "answers")
+        .order("created_at", { ascending: false }),
+    ]);
+    const user = session?.user;
     if (user) {
       setProfile({
         email: user.email ?? "",
@@ -49,15 +59,6 @@ export default function DashboardPage() {
         avatarUrl: (user.user_metadata?.avatar_url as string | undefined) ?? null,
       });
     }
-
-    const [learn, ws] = await Promise.all([
-      loadLearnCourses(supabase),
-      supabase
-        .from("workspaces")
-        .select("id, name, question_sets(questions(answers(count)))")
-        .eq("kind", "answers")
-        .order("created_at", { ascending: false }),
-    ]);
 
     type Row = {
       id: string;
