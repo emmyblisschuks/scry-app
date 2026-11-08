@@ -99,75 +99,75 @@ Deno.serve(async (req) => {
     }
 
     if (!units || units.length === 0) {
-    // The full course text is large, so it is only loaded when the course
-    // has to be (re)segmented. Every normal click skips this entirely.
-    const { data: textRow } = await supabase
-      .from("materials")
-      .select("extracted_text")
-      .eq("id", materialId)
-      .single();
-    let extractedText = (textRow?.extracted_text as string | null) ?? null;
+      // The full course text is large, so it is only loaded when the course
+      // has to be (re)segmented. Every normal click skips this entirely.
+      const { data: textRow } = await supabase
+        .from("materials")
+        .select("extracted_text")
+        .eq("id", materialId)
+        .single();
+      let extractedText = (textRow?.extracted_text as string | null) ?? null;
 
-    // Material indexed before Learn Mode existed (or linked to another
-    // workspace's copy) won't have extracted_text yet. Backfill it here,
-    // on demand, with a local parse — no Gemini call needed.
-    if (!extractedText) {
-      let storagePath = material.storage_path as string | null;
-      let sourceMaterialId = materialId;
+      // Material indexed before Learn Mode existed (or linked to another
+      // workspace's copy) won't have extracted_text yet. Backfill it here,
+      // on demand, with a local parse — no Gemini call needed.
+      if (!extractedText) {
+        let storagePath = material.storage_path as string | null;
+        let sourceMaterialId = materialId;
 
-      if (!storagePath && material.chunks_from) {
-        const { data: source } = await supabase
-          .from("materials")
-          .select("id, storage_path, extracted_text")
-          .eq("id", material.chunks_from)
-          .single();
-        if (source?.extracted_text) extractedText = source.extracted_text;
-        else if (source?.storage_path) {
-          storagePath = source.storage_path;
-          sourceMaterialId = source.id;
+        if (!storagePath && material.chunks_from) {
+          const { data: source } = await supabase
+            .from("materials")
+            .select("id, storage_path, extracted_text")
+            .eq("id", material.chunks_from)
+            .single();
+          if (source?.extracted_text) extractedText = source.extracted_text;
+          else if (source?.storage_path) {
+            storagePath = source.storage_path;
+            sourceMaterialId = source.id;
+          }
         }
-      }
 
-      if (!extractedText && storagePath) {
-        const { data: fileBlob } = await supabase.storage
-          .from("materials")
-          .download(storagePath);
-        if (fileBlob) {
-          const buffer = new Uint8Array(await fileBlob.arrayBuffer());
-          const isPdf = material.file_name.toLowerCase().endsWith(".pdf");
-          try {
-            const text = isPdf
-              ? (await pdfParse(buffer)).text
-              : (await mammoth.extractRawText({ buffer })).value;
-            if (text.trim()) {
-              extractedText = text.slice(0, MAX_EXTRACTED_CHARS);
-              await supabase
-                .from("materials")
-                .update({ extracted_text: extractedText })
-                .eq("id", sourceMaterialId);
-              if (sourceMaterialId !== materialId) {
+        if (!extractedText && storagePath) {
+          const { data: fileBlob } = await supabase.storage
+            .from("materials")
+            .download(storagePath);
+          if (fileBlob) {
+            const buffer = new Uint8Array(await fileBlob.arrayBuffer());
+            const isPdf = material.file_name.toLowerCase().endsWith(".pdf");
+            try {
+              const text = isPdf
+                ? (await pdfParse(buffer)).text
+                : (await mammoth.extractRawText({ buffer })).value;
+              if (text.trim()) {
+                extractedText = text.slice(0, MAX_EXTRACTED_CHARS);
                 await supabase
                   .from("materials")
                   .update({ extracted_text: extractedText })
-                  .eq("id", materialId);
+                  .eq("id", sourceMaterialId);
+                if (sourceMaterialId !== materialId) {
+                  await supabase
+                    .from("materials")
+                    .update({ extracted_text: extractedText })
+                    .eq("id", materialId);
+                }
               }
+            } catch (e) {
+              console.error("Learn Mode backfill parse failed:", e);
             }
-          } catch (e) {
-            console.error("Learn Mode backfill parse failed:", e);
           }
         }
       }
-    }
 
-    if (!extractedText) {
-      return jsonResponse(
-        {
-          error:
-            "Couldn't read this material for Learn Mode (the original file may have been removed to save storage). Re-upload it and try again.",
-        },
-        409
-      );
-    }
+      if (!extractedText) {
+        return jsonResponse(
+          {
+            error:
+              "Couldn't read this material for Learn Mode (the original file may have been removed to save storage). Re-upload it and try again.",
+          },
+          409
+        );
+      }
 
       const rows: Record<string, unknown>[] = [];
       for (const u of splitIntoUnits(extractedText)) {
