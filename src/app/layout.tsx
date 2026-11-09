@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Fraunces, Inter, Rajdhani } from "next/font/google";
+import { Atkinson_Hyperlegible, Fraunces, Inter, Literata, Rajdhani } from "next/font/google";
 import "./globals.css";
 
 // Inter is the workhorse: it's declared in globals.css as --font-sans but
@@ -34,6 +34,22 @@ const rajdhani = Rajdhani({
   display: "swap",
 });
 
+// Reading fonts for the book-style Learn reader. Literata is made for long
+// reading on screens; Atkinson Hyperlegible is designed for maximum letter
+// clarity (helps readers who find small, crowded text hard to read).
+const literata = Literata({
+  subsets: ["latin"],
+  variable: "--font-literata",
+  display: "swap",
+});
+
+const atkinson = Atkinson_Hyperlegible({
+  subsets: ["latin"],
+  weight: ["400", "700"],
+  variable: "--font-atkinson",
+  display: "swap",
+});
+
 export const metadata: Metadata = {
   title: "Scry — Smarter studying, clearer answers",
   description:
@@ -46,7 +62,7 @@ export default function RootLayout({
   return (
     <html
       lang="en"
-      className={`h-full antialiased ${inter.variable} ${fraunces.variable} ${rajdhani.variable}`}
+      className={`h-full antialiased ${inter.variable} ${fraunces.variable} ${rajdhani.variable} ${literata.variable} ${atkinson.variable}`}
     >
       <body className="min-h-full flex flex-col font-sans">{children}</body>
     </html>
