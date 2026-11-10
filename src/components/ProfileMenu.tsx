@@ -1,9 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { LogOut } from "lucide-react";
+import { LogOut, Crown } from "lucide-react";
+import { createClient } from "@/lib/supabase/client";
+import { loadUsageSummary, UsageSummary } from "@/lib/usage";
+import UsageModal from "@/components/UsageModal";
 
 export type ProfileUser = {
+  id: string;
   email: string;
   name: string | null;
   avatarUrl: string | null;
@@ -16,10 +20,20 @@ export default function ProfileMenu({
   user: ProfileUser;
   onSignOut: () => Promise<void> | void;
 }) {
+  const [supabase] = useState(() => createClient());
   const [open, setOpen] = useState(false);
   const [signingOut, setSigningOut] = useState(false);
   const [imgFailed, setImgFailed] = useState(false);
+  const [showUsage, setShowUsage] = useState(false);
+  const [summary, setSummary] = useState<UsageSummary | null>(null);
   const ref = useRef<HTMLDivElement>(null);
+
+  async function openUsage() {
+    setOpen(false);
+    setShowUsage(true);
+    const s = await loadUsageSummary(supabase);
+    if (s) setSummary(s);
+  }
 
   useEffect(() => {
     if (!open) return;
@@ -81,6 +95,15 @@ export default function ProfileMenu({
           <div className="my-1 h-px bg-cream-dark" />
           <button
             role="menuitem"
+            onClick={openUsage}
+            className="flex w-full items-center gap-2 rounded-xl px-3 py-2 text-sm text-ink transition hover:bg-wine/5"
+          >
+            <Crown size={16} className="text-wine" />
+            Usage &amp; plan
+          </button>
+          <div className="my-1 h-px bg-cream-dark" />
+          <button
+            role="menuitem"
             disabled={signingOut}
             onClick={async () => {
               setSigningOut(true);
@@ -92,6 +115,27 @@ export default function ProfileMenu({
             {signingOut ? "Signing out…" : "Sign out"}
           </button>
         </div>
+      )}
+
+      {showUsage && (
+        summary ? (
+          <UsageModal
+            email={user.email}
+            userId={user.id}
+            summary={summary}
+            onClose={() => setShowUsage(false)}
+            onUpgraded={(s) => setSummary(s)}
+          />
+        ) : (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4"
+            onClick={() => setShowUsage(false)}
+          >
+            <div className="rounded-2xl bg-cream px-6 py-5 text-sm text-muted shadow-xl">
+              Loading…
+            </div>
+          </div>
+        )
       )}
     </div>
   );

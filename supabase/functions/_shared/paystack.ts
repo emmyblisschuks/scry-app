@@ -73,6 +73,7 @@ export async function verifyPaystackSignature(
 // (or vice versa) is a no-op on the second write.
 export async function grantPremium(
   // deno-lint-ignore no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
   supabase: any,
   args: {
     userId: string;

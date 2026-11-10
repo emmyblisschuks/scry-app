@@ -11,6 +11,8 @@ import QuestionThumb from "@/components/QuestionThumb";
 import PasteQuestions from "@/components/PasteQuestions";
 import { hashFile } from "@/lib/fileHash";
 import { Material, QuestionImage } from "@/lib/types";
+import UsageModal from "@/components/UsageModal";
+import { checkAndRecordUsage, loadUsageSummary, UsageSummary } from "@/lib/usage";
 
 // What to do with a newly picked study-material file, decided by its hash:
 //  reuse  - identical file already indexed in THIS workspace (skip everything)
@@ -43,6 +45,9 @@ export default function WorkspaceClient() {
     { id: string; text: string }[]
   >([]);
   const [starting, setStarting] = useState(false);
+  const [upgrade, setUpgrade] = useState<{ email: string; userId: string; summary: UsageSummary } | null>(
+    null
+  );
 
   const loadWorkspace = useCallback(async () => {
     // Three independent reads — fire them together instead of stacking their
@@ -238,11 +243,34 @@ export default function WorkspaceClient() {
     const user = session?.user;
     if (!user) return;
 
-    // 1. Material: only upload/process what memory doesn't already have
     const fail = (message: string) => {
       setGenError(message);
       setStarting(false);
     };
+
+    // Free tier: 5 new Answers runs a month. Checked (and recorded,
+    // atomically) before any upload/processing work starts, since that's
+    // where the real Gemini cost sits.
+    const check = await checkAndRecordUsage(supabase, "answers");
+    if (!check.allowed) {
+      setStarting(false);
+      const fullSummary = await loadUsageSummary(supabase);
+      setUpgrade({
+        email: user.email ?? "",
+        userId: user.id,
+        summary: fullSummary ?? {
+          plan: "free",
+          isPremium: false,
+          periodEnd: null,
+          learnUsed: 0,
+          answersUsed: check.used,
+          limit: check.limit,
+        },
+      });
+      return;
+    }
+
+    // 1. Material: only upload/process what memory doesn't already have
     let materialId: string | undefined;
 
     if (plan?.kind === "reuse") {
@@ -536,6 +564,17 @@ export default function WorkspaceClient() {
           </p>
         )}
       </div>
+
+      {upgrade && (
+        <UsageModal
+          email={upgrade.email}
+          userId={upgrade.userId}
+          summary={upgrade.summary}
+          reason="answers"
+          onClose={() => setUpgrade(null)}
+          onUpgraded={(s) => setUpgrade((u) => (u ? { ...u, summary: s } : u))}
+        />
+      )}
     </main>
   );
 }

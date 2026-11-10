@@ -9,6 +9,8 @@ import { LearnCourse, loadLearnCourses, learnHref, whereYouStopped } from "@/lib
 import { uploadWithProgress } from "@/lib/uploadWithProgress";
 import { deleteWorkspaceCompletely } from "@/lib/deleteWorkspace";
 import DeleteConfirmModal from "@/components/DeleteConfirmModal";
+import UsageModal from "@/components/UsageModal";
+import { checkAndRecordUsage, loadUsageSummary, UsageSummary } from "@/lib/usage";
 
 export default function LearnHomePage() {
   const router = useRouter();
@@ -18,6 +20,9 @@ export default function LearnHomePage() {
   const [stage, setStage] = useState<string | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [upgrade, setUpgrade] = useState<{ email: string; userId: string; summary: UsageSummary } | null>(
+    null
+  );
   const [mode, setMode] = useState<"objective" | "theory" | null>(null);
   const [ready, setReady] = useState<{ href: string; name: string } | null>(null);
   const [pendingDelete, setPendingDelete] = useState<{ workspaceId: string; name: string } | null>(
@@ -53,6 +58,29 @@ export default function LearnHomePage() {
       } = await supabase.auth.getSession();
       const user = session?.user;
       if (!user || !session) throw new Error("You need to be signed in.");
+
+      // Free tier: 5 new Learn courses a month. Checked (and recorded,
+      // atomically) before any upload work so a blocked attempt doesn't
+      // waste a partial upload.
+      const check = await checkAndRecordUsage(supabase, "learn");
+      if (!check.allowed) {
+        setStage(null);
+        setFile(null);
+        const fullSummary = await loadUsageSummary(supabase);
+        setUpgrade({
+          email: user.email ?? "",
+          userId: user.id,
+          summary: fullSummary ?? {
+            plan: "free",
+            isPremium: false,
+            periodEnd: null,
+            learnUsed: check.used,
+            answersUsed: 0,
+            limit: check.limit,
+          },
+        });
+        return;
+      }
 
       const name = f.name.replace(/\.(pdf|docx)$/i, "");
       const { data: ws, error: wsErr } = await supabase
@@ -251,6 +279,17 @@ export default function LearnHomePage() {
           description="This removes the course file, lessons, quizzes, and your progress in"
           onClose={() => setPendingDelete(null)}
           onConfirm={deleteCourse}
+        />
+      )}
+
+      {upgrade && (
+        <UsageModal
+          email={upgrade.email}
+          userId={upgrade.userId}
+          summary={upgrade.summary}
+          reason="learn"
+          onClose={() => setUpgrade(null)}
+          onUpgraded={(s) => setUpgrade((u) => (u ? { ...u, summary: s } : u))}
         />
       )}
     </main>
